@@ -1,1 +1,1 @@
-# TalkingGarments-Plus
+# Talking Garments Plus
