@@ -2,3 +2,4 @@ openai==0.28
 vosk
 sounddevice
 edge-tts
+python-dotenv
