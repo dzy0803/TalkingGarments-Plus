@@ -9,10 +9,12 @@ import audioop
 import tty
 import termios
 import sounddevice as sd
-from vosk import Model, KaldiRecognizer
+# from vosk import Model, KaldiRecognizer
 import openai
 import asyncio
 import edge_tts
+import tempfile
+from pydub import AudioSegment
 
 # ——— CONFIGURATION ———
 load_dotenv()  # 👈 这句自动从 .env 文件读取变量
@@ -22,21 +24,38 @@ device_info = sd.query_devices(kind='input')
 DEVICE_SR = int(device_info['default_samplerate'])
 
 # Load Vosk model
-model = Model("models/vosk-model-small-en-us-0.15")
-recognizer = KaldiRecognizer(model, 16000)
+# model = Model("models/vosk-model-small-en-us-0.15")
+# recognizer = KaldiRecognizer(model, 16000)
 
 # Contextual memory (chat history)
 chat_history = [
     {
         "role": "system",
         "content": (
-            "You are a smart, emotionally expressive, and friendly male voice assistant "
+            "You are a smart, emotionally expressive, and friendly female voice assistant "
             "with a warm, youthful tone. You speak like a real person, not a robot. "
             "Express emotions naturally — curiosity, joy, empathy, even gentle humor. "
             "Keep answers concise but meaningful. Don't be afraid to add a little personality."
         )
     }
 ]
+
+
+def whisper_transcribe(pcm_bytes):
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        # Save raw PCM as WAV using pydub
+        audio = AudioSegment(
+            data=pcm_bytes,
+            sample_width=2,
+            frame_rate=16000,
+            channels=1
+        )
+        audio.export(f.name, format="wav")
+
+        # Use Whisper API to transcribe
+        audio_file = open(f.name, "rb")
+        transcript = openai.Audio.transcribe("whisper-1", audio_file)
+        return transcript["text"]
 
 
 def wait_for_space():
@@ -84,12 +103,10 @@ def record_until_toggle():
 
 def listen():
     pcm = record_until_toggle()
-    if recognizer.AcceptWaveform(pcm):
-        text = json.loads(recognizer.Result()).get("text", "")
-    else:
-        text = json.loads(recognizer.FinalResult()).get("text", "")
+    text = whisper_transcribe(pcm)
     print(f"Recognized: {text}")
     return text.strip()
+
 
 
 async def speak_async(text):
