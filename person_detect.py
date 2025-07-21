@@ -1,4 +1,4 @@
-import cv2, mediapipe as mp, time, os, asyncio, edge_tts, subprocess
+import cv2, mediapipe as mp, time, os, asyncio, edge_tts, subprocess, queue, webrtcvad
 from dotenv import load_dotenv
 from picamera2 import Picamera2
 import openai, sys, json, tempfile, audioop, sounddevice as sd
@@ -11,31 +11,94 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 VOICE_JARVIS = "en-US-GuyNeural"
 USED_FILE = "used_sentences_jarvis.json"
 
-# === sounddevice config ===
+# === 音频参数 ===
+SAMPLE_RATE = 16000
+FRAME_DURATION = 30  # ms
+FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION / 1000)
+MIN_AUDIO_LEN = 0.5
+MAX_AUDIO_LEN = 20.0
+SILENCE_TIMEOUT = 0.8  # 停顿超过0.8秒才算结束
+
+# === VAD配置 ===
+vad = webrtcvad.Vad()
+vad.set_mode(2)  # 0-3 越大越敏感
+
+audio_queue = queue.Queue()
+
 device_info = sd.query_devices(kind='input')
 DEVICE_SR = int(device_info['default_samplerate'])
 
 # === Whisper speech-to-text ===
 def whisper_transcribe(pcm_bytes):
-    with tempfile.NamedTemporaryFile(suffix=".wav",delete=False) as f:
-        audio=AudioSegment(data=pcm_bytes,sample_width=2,frame_rate=16000,channels=1)
-        audio.export(f.name,format="wav")
-        audio_file=open(f.name,"rb")
-        tr=openai.Audio.transcribe("whisper-1",audio_file)
-        return tr["text"]
+    duration = len(pcm_bytes) / 2 / SAMPLE_RATE
+    if duration < MIN_AUDIO_LEN:
+        print(f"⚠️ 跳过 <{MIN_AUDIO_LEN}s 的音频")
+        return ""
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        audio = AudioSegment(
+            data=pcm_bytes,
+            sample_width=2,
+            frame_rate=SAMPLE_RATE,
+            channels=1
+        )
+        audio.export(f.name, format="wav")
+        try:
+            with open(f.name, "rb") as audio_file:
+                result = openai.Audio.transcribe("whisper-1", audio_file)
+                return result["text"].strip()
+        except Exception as e:
+            print(f"❌ Whisper出错: {e}")
+            return ""
 
-def record_short_audio(duration=2):  # ✅ 改成2秒
-    print(f"🎤 Listening {duration}s...")
-    audio = sd.rec(int(duration * DEVICE_SR), samplerate=DEVICE_SR, channels=1, dtype='int16')
-    sd.wait()
-    pcm16 = audioop.ratecv(audio.tobytes(), 2, 1, DEVICE_SR, 16000, None)[0]
-    return pcm16
+# === 动态录音（和测试版一致） ===
+def audio_callback(indata, frames, time_info, status):
+    if status:
+        print("⚠️", status)
+    audio_queue.put(bytes(indata))
 
-def listen_once_auto():
-    pcm = record_short_audio(2)
-    text = whisper_transcribe(pcm)
-    print(f"Recognized: {text}")
-    return text.strip()
+def vad_recording():
+    print("🎤 Listening… you can pause ≤1s without ending the sentence.")
+
+    with sd.RawInputStream(
+        samplerate=SAMPLE_RATE,
+        blocksize=FRAME_SIZE,
+        dtype="int16",
+        channels=1,
+        callback=audio_callback
+    ):
+        pcm_buffer = b""
+        speaking = False
+        silence_time = 0.0
+
+        while True:
+            frame = audio_queue.get()
+            if len(frame) < FRAME_SIZE * 2:
+                continue
+
+            is_speech = vad.is_speech(frame, SAMPLE_RATE)
+
+            if is_speech:
+                pcm_buffer += frame
+                speaking = True
+                silence_time = 0.0
+            else:
+                if speaking:
+                    silence_time += FRAME_DURATION / 1000.0
+                    if silence_time >= SILENCE_TIMEOUT:
+                        duration = len(pcm_buffer) / 2 / SAMPLE_RATE
+                        if duration < MIN_AUDIO_LEN:
+                            print(f"⚠️ 太短({duration:.2f}s)，丢弃重录…")
+                            pcm_buffer = b""
+                            speaking = False
+                            silence_time = 0.0
+                            continue
+                        print(f"✅ End of speech, length={duration:.2f}s")
+                        return pcm_buffer
+
+            duration = len(pcm_buffer) / 2 / SAMPLE_RATE
+            if duration >= MAX_AUDIO_LEN:
+                print(f"⏳ 超过最大长度 {MAX_AUDIO_LEN}s，强制结束")
+                return pcm_buffer
 
 # === GPT helpers ===
 def load_used_sentences():
@@ -87,29 +150,27 @@ def classify_intent(user_text):
 # === Interruptible speak ===
 def speak_interruptible(text, check_person_func, disappear_limit=5):
     tmp_file="/tmp/tts.mp3"
-    # 生成语音
     asyncio.run(edge_tts.Communicate(text,voice=VOICE_JARVIS).save(tmp_file))
-
     proc = subprocess.Popen(["mpg123", "-q", tmp_file])
     disappear_start = None
-    while proc.poll() is None:  # 播放中
+    while proc.poll() is None:
         time.sleep(0.2)
-        if not check_person_func():  # 人脸不在
+        if not check_person_func():
             if disappear_start is None:
                 disappear_start = time.time()
             elif time.time() - disappear_start >= disappear_limit:
                 print(f"🚨 Face gone >{disappear_limit}s during speaking → stop & reset")
                 proc.terminate()
-                return False  # 中途离开 → reset
+                return False
         else:
-            disappear_start = None  # 人回来了，重置计时
-    return True  # 正常播放完毕
+            disappear_start = None
+    return True
 
 # === Camera setup ===
 picam2=Picamera2()
 picam2.configure(
     picam2.create_video_configuration(
-        main={"format":"RGB888","size":(1640,1232)}  # Zoom out最大视野
+        main={"format":"RGB888","size":(1640,1232)}
     )
 )
 picam2.start()
@@ -117,12 +178,10 @@ picam2.start()
 mp_face_mesh = mp.solutions.face_mesh
 mp_drawing = mp.solutions.drawing_utils
 
-stay_threshold=3         # 连续3秒进入交互
-
+stay_threshold=3
 interaction_mode=False
 stay_start=None
 
-# === 实时检测人脸函数 ===
 def is_face_present(face_results):
     return bool(face_results.multi_face_landmarks)
 
@@ -140,7 +199,6 @@ with mp_face_mesh.FaceMesh(
         now=time.time()
         person_now=is_face_present(results)
 
-        # === 连续检测人脸3秒才进入交互 ===
         if not interaction_mode:
             if person_now:
                 if stay_start is None:
@@ -160,19 +218,17 @@ with mp_face_mesh.FaceMesh(
                         print(f"🤖 Jarvis says: {welcome}")
                         ok = speak_interruptible(welcome, lambda: is_face_present(results), disappear_limit=5)
                         if not ok:
-                            # 欢迎语过程中人走了≥5秒 → reset
                             interaction_mode=False
                             stay_start=None
                             continue
             else:
                 stay_start=None
 
-        # === 交互状态 ===
         if interaction_mode:
-            # 监听2秒
-            user_reply = listen_once_auto()
-            if not user_reply:
-                # 沉默 → 简短道别并reset
+            # ✅ 改为动态VAD录音，而不是固定2秒
+            pcm_data = vad_recording()
+            user_reply = whisper_transcribe(pcm_data)
+            if not user_reply.strip():
                 goodbye_prompt = (
                     "You are Jarvis the greeter. "
                     "Say a short polite goodbye, add a nice wish like 'have a great day'."
@@ -184,17 +240,15 @@ with mp_face_mesh.FaceMesh(
                 stay_start=None
                 continue
 
-            # 有语音 → 只接受肯定继续
+            print(f"🗣️ User: {user_reply}")
             intent = classify_intent(user_reply)
             print(f"Intent classified: {intent}")
 
             if intent == "continue":
                 speak_interruptible("Great! I’ll hand you over to Alice, our specialist.",
                                     lambda: is_face_present(results), disappear_limit=5)
-                sys.exit(0)  # ✅ 切换到 Alice
-
+                sys.exit(0)
             else:
-                # 不是肯定答复 → 简短道别+祝愿后reset
                 goodbye_prompt = (
                     "You are Jarvis the greeter. "
                     "The user didn’t want to continue. Say a short polite goodbye and a nice wish like 'enjoy your day'."
@@ -206,7 +260,6 @@ with mp_face_mesh.FaceMesh(
                 stay_start=None
                 continue
 
-        # === 绘制FaceMesh关键点 ===
         if results.multi_face_landmarks:
             for face_landmarks in results.multi_face_landmarks:
                 mp_drawing.draw_landmarks(
@@ -222,3 +275,4 @@ with mp_face_mesh.FaceMesh(
             break
 
 cv2.destroyAllWindows()
+

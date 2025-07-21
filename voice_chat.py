@@ -1,5 +1,5 @@
-import sys, os, re, queue, audioop, tty, termios, sounddevice as sd
-import json, tempfile, asyncio, subprocess
+import sys, os, re, queue, audioop, sounddevice as sd
+import json, tempfile, asyncio, subprocess, webrtcvad
 from dotenv import load_dotenv
 import openai, edge_tts
 from pydub import AudioSegment
@@ -7,10 +7,24 @@ from pydub import AudioSegment
 # === CONFIG ===
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
 device_info = sd.query_devices(kind='input')
 DEVICE_SR = int(device_info['default_samplerate'])
 
 USED_FILE="used_sentences.json"
+
+# === VAD params ===
+SAMPLE_RATE = 16000
+FRAME_DURATION = 30  # ms
+FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION / 1000)
+MIN_AUDIO_LEN = 0.5
+MAX_AUDIO_LEN = 20.0
+SILENCE_TIMEOUT = 0.8
+
+vad = webrtcvad.Vad()
+vad.set_mode(2)
+
+audio_queue = queue.Queue()
 
 def load_used_sentences():
     if os.path.exists(USED_FILE):
@@ -46,46 +60,68 @@ def get_unique_sentence(prompt,temp=0.9,max_tokens=80):
     return s
 
 def whisper_transcribe(pcm_bytes):
+    duration = len(pcm_bytes) / 2 / SAMPLE_RATE
+    if duration < MIN_AUDIO_LEN:
+        print(f"⚠️ Skip too short audio <{MIN_AUDIO_LEN}s")
+        return ""
     with tempfile.NamedTemporaryFile(suffix=".wav",delete=False) as f:
         audio=AudioSegment(data=pcm_bytes,sample_width=2,frame_rate=16000,channels=1)
         audio.export(f.name,format="wav")
-        audio_file=open(f.name,"rb")
-        tr=openai.Audio.transcribe("whisper-1",audio_file)
-        return tr["text"]
+        try:
+            with open(f.name,"rb") as audio_file:
+                tr=openai.Audio.transcribe("whisper-1",audio_file)
+                return tr["text"].strip()
+        except Exception as e:
+            print(f"❌ Whisper error: {e}")
+            return ""
 
-def wait_for_space():
-    fd=sys.stdin.fileno()
-    old_settings=termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
+# === VAD dynamic recording ===
+def audio_callback(indata, frames, time_info, status):
+    if status:
+        print("⚠️", status)
+    audio_queue.put(bytes(indata))
+
+def vad_recording():
+    print("🎤 Listening… pause ≤1s won’t cut your sentence.")
+    with sd.RawInputStream(
+        samplerate=SAMPLE_RATE,
+        blocksize=FRAME_SIZE,
+        dtype="int16",
+        channels=1,
+        callback=audio_callback
+    ):
+        pcm_buffer = b""
+        speaking = False
+        silence_time = 0.0
         while True:
-            ch=sys.stdin.read(1)
-            if ch==' ':
-                break
-    finally:
-        termios.tcsetattr(fd,termios.TCSADRAIN,old_settings)
+            frame = audio_queue.get()
+            if len(frame) < FRAME_SIZE * 2:
+                continue
 
-def record_until_toggle():
-    chunks,q=[],queue.Queue()
-    def cb(indata,frames,time,status):
-        if status and status.input_overflow: return
-        q.put(bytes(indata))
-    print("Press [space] → start recording")
-    wait_for_space()
-    print("Recording… press [space] → stop")
-    with sd.RawInputStream(samplerate=DEVICE_SR,blocksize=8000,dtype='int16',channels=1,callback=cb):
-        wait_for_space()
-    print("Recording stopped, resampling…")
-    while not q.empty(): chunks.append(q.get())
-    raw=b''.join(chunks)
-    pcm16=audioop.ratecv(raw,2,1,DEVICE_SR,16000,None)[0]
-    return pcm16
+            is_speech = vad.is_speech(frame, SAMPLE_RATE)
 
-def listen():
-    pcm=record_until_toggle()
-    text=whisper_transcribe(pcm)
-    print(f"Recognized: {text}")
-    return text.strip()
+            if is_speech:
+                pcm_buffer += frame
+                speaking = True
+                silence_time = 0.0
+            else:
+                if speaking:
+                    silence_time += FRAME_DURATION / 1000.0
+                    if silence_time >= SILENCE_TIMEOUT:
+                        duration = len(pcm_buffer) / 2 / SAMPLE_RATE
+                        if duration < MIN_AUDIO_LEN:
+                            print(f"⚠️ Too short({duration:.2f}s), discard & retry…")
+                            pcm_buffer = b""
+                            speaking = False
+                            silence_time = 0.0
+                            continue
+                        print(f"✅ End of speech, length={duration:.2f}s")
+                        return pcm_buffer
+
+            duration = len(pcm_buffer) / 2 / SAMPLE_RATE
+            if duration >= MAX_AUDIO_LEN:
+                print(f"⏳ Max length {MAX_AUDIO_LEN}s reached, force end.")
+                return pcm_buffer
 
 async def speak_async(text):
     tts=edge_tts.Communicate(text,voice="en-US-JennyNeural")
@@ -122,16 +158,15 @@ def is_leaving_intent(user_text):
     return "yes" in result.lower()
 
 if __name__=="__main__":
-    print("Press [space] → record/stop → process. Ctrl+C to exit.")
+    print("🎯 Alice is ready. You can just talk, I’m listening…")
     # Opening
     opening_prompt=(
         "You are Alice, the warm and elegant housekeeper of a clothing store. "
         "Create a short friendly greeting in English. "
         "Say something like: 'Welcome to our clothing store, my name is Alice, "
         "I’m the store’s housekeeper. I can introduce the basic information about different clothes "
-        "and how you can interact with me. But first, please tell me what kind of clothes you are looking for?' "
-        "At the end, also politely tell them: 'Press space to start recording, and press it again to finish recording so we can talk.' "
-        "Make it natural, polite, slightly varied, and do NOT repeat any previous greeting exactly."
+        "and how you can interact with me. Please tell me what kind of clothes you are looking for?' "
+        "Do NOT mention pressing space, just invite them to speak naturally."
     )
     opening_line=get_unique_sentence(opening_prompt)
     print(f"Alice opening: {opening_line}")
@@ -140,8 +175,13 @@ if __name__=="__main__":
 
     try:
         while True:
-            user_text=listen()
-            if not user_text: continue
+            pcm_data = vad_recording()
+            user_text = whisper_transcribe(pcm_data)
+            if not user_text: 
+                print("🤔 Didn’t catch that, try again…")
+                continue
+
+            print(f"🗣️ Customer: {user_text}")
 
             if is_leaving_intent(user_text):
                 goodbye_prompt=(
@@ -152,7 +192,7 @@ if __name__=="__main__":
                 goodbye_line=get_unique_sentence(goodbye_prompt)
                 print(f"Alice goodbye: {goodbye_line}")
                 speak(goodbye_line)
-                sys.exit(0)  # ✅ 回 main.py
+                sys.exit(0)
 
             response=chat_with_gpt(user_text)
             speak(response)
