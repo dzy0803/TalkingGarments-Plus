@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
+
+import os, asyncio, edge_tts   # ✅ 新增 edge_tts 依赖
+
+async def startup_voice():
+    tts = edge_tts.Communicate("Power on", voice="en-US-JennyNeural")
+    await tts.save("/tmp/startup.mp3")
+    os.system("mpg123 /tmp/startup.mp3")
+
+# ✅ 运行时先说 Power on
+asyncio.run(startup_voice())
+
+
 import subprocess
+import os
+os.system("amixer sset 'Master' 75% unmute")
 
 while True:
     print("\n=== 🚀 Starting Jarvis (person_detect.py) ===")
