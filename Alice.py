@@ -1,21 +1,18 @@
-import sys, os, re, queue, audioop, sounddevice as sd
-import json, tempfile, asyncio, subprocess, webrtcvad
+import sys, os, json, tempfile, asyncio, queue
+import sounddevice as sd
+import webrtcvad
 from dotenv import load_dotenv
-import openai, edge_tts
+import openai
 from pydub import AudioSegment
+
+from interruptible_tts import speak_and_listen
 
 # === CONFIG ===
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-device_info = sd.query_devices(kind='input')
-DEVICE_SR = int(device_info['default_samplerate'])
-
-USED_FILE="used_sentences.json"
-
-# === VAD params ===
 SAMPLE_RATE = 16000
-FRAME_DURATION = 30  # ms
+FRAME_DURATION = 30
 FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION / 1000)
 MIN_AUDIO_LEN = 0.5
 MAX_AUDIO_LEN = 20.0
@@ -25,6 +22,7 @@ vad = webrtcvad.Vad()
 vad.set_mode(2)
 
 audio_queue = queue.Queue()
+USED_FILE="used_sentences.json"
 
 def load_used_sentences():
     if os.path.exists(USED_FILE):
@@ -75,7 +73,6 @@ def whisper_transcribe(pcm_bytes):
             print(f"❌ Whisper error: {e}")
             return ""
 
-# === VAD dynamic recording ===
 def audio_callback(indata, frames, time_info, status):
     if status:
         print("⚠️", status)
@@ -97,9 +94,7 @@ def vad_recording():
             frame = audio_queue.get()
             if len(frame) < FRAME_SIZE * 2:
                 continue
-
             is_speech = vad.is_speech(frame, SAMPLE_RATE)
-
             if is_speech:
                 pcm_buffer += frame
                 speaking = True
@@ -117,18 +112,10 @@ def vad_recording():
                             continue
                         print(f"✅ End of speech, length={duration:.2f}s")
                         return pcm_buffer
-
             duration = len(pcm_buffer) / 2 / SAMPLE_RATE
             if duration >= MAX_AUDIO_LEN:
                 print(f"⏳ Max length {MAX_AUDIO_LEN}s reached, force end.")
                 return pcm_buffer
-
-async def speak_async(text):
-    tts=edge_tts.Communicate(text,voice="en-US-JennyNeural")
-    await tts.save("response.mp3")
-    os.system("mpg123 response.mp3")
-
-def speak(text): asyncio.run(speak_async(text))
 
 chat_history=[{
     "role":"system",
@@ -150,16 +137,14 @@ def chat_with_gpt(user_input):
     return reply
 
 def is_leaving_intent(user_text):
-    check_prompt=(
-        f"The customer says: \"{user_text}\".\n"
-        "Does this clearly mean they want to leave or end the conversation? Answer ONLY YES or NO."
-    )
-    result=gpt_reply(check_prompt,temp=0,max_tokens=5)
+    check_prompt = f"""The customer says: "{user_text}".
+Does this clearly mean they want to leave or end the conversation? Answer ONLY YES or NO."""
+    result = gpt_reply(check_prompt, temp=0, max_tokens=5)
     return "yes" in result.lower()
+
 
 if __name__=="__main__":
     print("🎯 Alice is ready. You can just talk, I’m listening…")
-    # Opening
     opening_prompt=(
         "You are Alice, the warm and elegant housekeeper of a clothing store. "
         "Create a short friendly greeting in English. "
@@ -170,14 +155,14 @@ if __name__=="__main__":
     )
     opening_line=get_unique_sentence(opening_prompt)
     print(f"Alice opening: {opening_line}")
-    speak(opening_line)
+    speak_and_listen(opening_line)
     chat_history.append({"role":"assistant","content":opening_line})
 
     try:
         while True:
             pcm_data = vad_recording()
             user_text = whisper_transcribe(pcm_data)
-            if not user_text: 
+            if not user_text:
                 print("🤔 Didn’t catch that, try again…")
                 continue
 
@@ -191,14 +176,14 @@ if __name__=="__main__":
                 )
                 goodbye_line=get_unique_sentence(goodbye_prompt)
                 print(f"Alice goodbye: {goodbye_line}")
-                speak(goodbye_line)
+                speak_and_listen(goodbye_line)
                 sys.exit(0)
 
             response=chat_with_gpt(user_text)
-            speak(response)
+            interrupted = speak_and_listen(response)
+            if interrupted:
+                print("🔄 interrupted → enter next round conversation")
+                continue
 
     except KeyboardInterrupt:
         print("\nGoodbye!")
-
-
-
