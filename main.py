@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 import os, asyncio, edge_tts   # ✅ 新增 edge_tts 依赖
+os.system("amixer sset 'Master' 75% unmute")
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 async def startup_voice():
-    tts = edge_tts.Communicate("Power on", voice="en-US-JennyNeural")
+    tts = edge_tts.Communicate("System Activated, Please wait for a minute to boot the agents", voice="en-US-JennyNeural")
     await tts.save("/tmp/startup.mp3")
     os.system("mpg123 /tmp/startup.mp3")
 
@@ -12,8 +14,6 @@ asyncio.run(startup_voice())
 
 
 import subprocess
-import os
-os.system("amixer sset 'Master' 75% unmute")
 
 while True:
     print("\n=== 🚀 Starting Jarvis (person_detect.py) ===")
