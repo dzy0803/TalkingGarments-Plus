@@ -1,0 +1,7 @@
+opencv-python
+mediapipe
+sounddevice
+pydub
+python-dotenv
+openai==0.28
+edge-tts
