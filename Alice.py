@@ -4,7 +4,7 @@ import webrtcvad
 from dotenv import load_dotenv
 import openai
 from pydub import AudioSegment
-
+import time   # ✅ 补上这个
 from interruptible_tts import speak_and_listen
 
 # === CONFIG ===
@@ -78,8 +78,10 @@ def audio_callback(indata, frames, time_info, status):
         print("⚠️", status)
     audio_queue.put(bytes(indata))
 
-def vad_recording():
-    print("🎤 Listening… pause ≤1s won’t cut your sentence.")
+def vad_recording(timeout=7):
+    print(f"🎤 Listening… pause ≤1s won’t cut your sentence. Timeout={timeout}s")
+    start_time = time.time()
+
     with sd.RawInputStream(
         samplerate=SAMPLE_RATE,
         blocksize=FRAME_SIZE,
@@ -91,9 +93,16 @@ def vad_recording():
         speaking = False
         silence_time = 0.0
         while True:
-            frame = audio_queue.get()
-            if len(frame) < FRAME_SIZE * 2:
+            # ✅ 超时检测
+            if not speaking and (time.time() - start_time > timeout):
+                print("⏳ No voice detected within timeout")
+                return None
+
+            try:
+                frame = audio_queue.get(timeout=0.1)
+            except queue.Empty:
                 continue
+
             is_speech = vad.is_speech(frame, SAMPLE_RATE)
             if is_speech:
                 pcm_buffer += frame
@@ -112,6 +121,7 @@ def vad_recording():
                             continue
                         print(f"✅ End of speech, length={duration:.2f}s")
                         return pcm_buffer
+
             duration = len(pcm_buffer) / 2 / SAMPLE_RATE
             if duration >= MAX_AUDIO_LEN:
                 print(f"⏳ Max length {MAX_AUDIO_LEN}s reached, force end.")
@@ -142,16 +152,15 @@ Does this clearly mean they want to leave or end the conversation? Answer ONLY Y
     result = gpt_reply(check_prompt, temp=0, max_tokens=5)
     return "yes" in result.lower()
 
-
 if __name__=="__main__":
     print("🎯 Alice is ready. You can just talk, I’m listening…")
     opening_prompt=(
         "You are Alice, the warm and elegant housekeeper of a clothing store. "
         "Create a short friendly greeting in English. "
         "Say something like: 'Welcome to our clothing store, my name is Alice, "
-        "I’m the store’s housekeeper. I can introduce the basic information about different clothes "
-        "and how you can interact with me. Please tell me what kind of clothes you are looking for?' "
-        "Do NOT mention pressing space, just invite them to speak naturally."
+        "I’m the store’s housekeeper. I can introduce the basic information about different clothes. "
+        "Please tell me what kind of clothes you are looking for?' "
+        "Just invite them to speak naturally."
     )
     opening_line=get_unique_sentence(opening_prompt)
     print(f"Alice opening: {opening_line}")
@@ -160,7 +169,34 @@ if __name__=="__main__":
 
     try:
         while True:
-            pcm_data = vad_recording()
+            # ✅ 第一次等 7 秒
+            pcm_data = vad_recording(timeout=7)
+            if pcm_data is None:
+                # 第一次提醒 → 确认是否想了解更多
+                remind_prompt = (
+                    "The customer didn’t reply for 7 seconds. "
+                    "Generate a short warm reminder like: "
+                    "'Would you like me to tell you more about our styles or special collections? "
+                    "If you’re interested, I can explain further.' "
+                    "Keep it inviting and end with a soft question."
+                )
+                remind_line = get_unique_sentence(remind_prompt)
+                print(f"Alice reminder: {remind_line}")
+                speak_and_listen(remind_line)
+
+                # 再等第二次 7 秒
+                pcm_data = vad_recording(timeout=7)
+                if pcm_data is None:
+                    goodbye_prompt = (
+                        "The customer still didn’t reply after a reminder. "
+                        "Generate a short polite goodbye in English like "
+                        "'Alright, I’ll let you browse freely. Have a wonderful day!'"
+                    )
+                    goodbye_line = get_unique_sentence(goodbye_prompt)
+                    print(f"Alice final goodbye: {goodbye_line}")
+                    speak_and_listen(goodbye_line)
+                    sys.exit(0)
+
             user_text = whisper_transcribe(pcm_data)
             if not user_text:
                 print("🤔 Didn’t catch that, try again…")

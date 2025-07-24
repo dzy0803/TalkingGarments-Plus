@@ -5,7 +5,7 @@ os.system("amixer sset 'Master' 75% unmute")
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 async def startup_voice():
-    tts = edge_tts.Communicate("System Activated, Please wait for a minute to boot the agents", voice="en-US-JennyNeural")
+    tts = edge_tts.Communicate("System Activated, Please wait for a minute to boot the agents", voice="en-US-AriaNeural")
     await tts.save("/tmp/startup.mp3")
     os.system("mpg123 /tmp/startup.mp3")
 

@@ -49,7 +49,7 @@ def monitor_interrupt(check_person_func=None, disappear_limit=5):
       - Require continuous speech for at least 1.3s to confirm interruption
       - If check_person_func() returns False for > disappear_limit seconds, also interrupt
     """
-    needed_frames = int(1.0 / (FRAME_DURATION / 1000.0))  # frames for ~1.3s speech
+    needed_frames = int(1.3 / (FRAME_DURATION / 1000.0))  # frames for ~1.3s speech
     speech_frames = 0
     first_detected = False
     confirm_timeout = 1.0  # must continue talking within 1s after first detection
@@ -119,7 +119,7 @@ def monitor_interrupt(check_person_func=None, disappear_limit=5):
 
             # Final confirmation: must have continuous ~1.0s speech frames
             if speech_frames >= needed_frames:
-                print("✅ Confirmed continuous speech for 1.0s → stopping playback and entering recording")
+                print("✅ Confirmed continuous speech for 1.3s → stopping playback and entering recording")
                 stop_speaking()
                 interrupt_event.set()
                 break
