@@ -1,10 +1,11 @@
+# Alice.py
 import sys, os, json, tempfile, asyncio, queue
 import sounddevice as sd
 import webrtcvad
 from dotenv import load_dotenv
 import openai
 from pydub import AudioSegment
-import time   # ✅ 补上这个
+import time
 from interruptible_tts import speak_and_listen
 
 # === CONFIG ===
@@ -17,6 +18,9 @@ FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION / 1000)
 MIN_AUDIO_LEN = 0.5
 MAX_AUDIO_LEN = 20.0
 SILENCE_TIMEOUT = 0.8
+
+# 🔑 Keyword(s) that interrupt Alice while speaking
+INTERRUPT_KEYWORDS = ["stop talking"]  # e.g. ["stop talking","stop","be quiet"]
 
 vad = webrtcvad.Vad()
 vad.set_mode(2)
@@ -93,7 +97,7 @@ def vad_recording(timeout=7):
         speaking = False
         silence_time = 0.0
         while True:
-            # ✅ 超时检测
+            # ✅ timeout for initial voice
             if not speaking and (time.time() - start_time > timeout):
                 print("⏳ No voice detected within timeout")
                 return None
@@ -164,15 +168,16 @@ if __name__=="__main__":
     )
     opening_line=get_unique_sentence(opening_prompt)
     print(f"Alice opening: {opening_line}")
-    speak_and_listen(opening_line)
+    # 🔑 Opening speech can be keyword-interrupted
+    speak_and_listen(opening_line, keywords=INTERRUPT_KEYWORDS)
     chat_history.append({"role":"assistant","content":opening_line})
 
     try:
         while True:
-            # ✅ 第一次等 7 秒
+            # ✅ 1st wait 7s
             pcm_data = vad_recording(timeout=7)
             if pcm_data is None:
-                # 第一次提醒 → 确认是否想了解更多
+                # 1st reminder
                 remind_prompt = (
                     "The customer didn’t reply for 7 seconds. "
                     "Generate a short warm reminder like: "
@@ -182,9 +187,10 @@ if __name__=="__main__":
                 )
                 remind_line = get_unique_sentence(remind_prompt)
                 print(f"Alice reminder: {remind_line}")
-                speak_and_listen(remind_line)
+                # 🔑 Reminder can be keyword-interrupted
+                speak_and_listen(remind_line, keywords=INTERRUPT_KEYWORDS)
 
-                # 再等第二次 7 秒
+                # 2nd wait 7s
                 pcm_data = vad_recording(timeout=7)
                 if pcm_data is None:
                     goodbye_prompt = (
@@ -194,7 +200,8 @@ if __name__=="__main__":
                     )
                     goodbye_line = get_unique_sentence(goodbye_prompt)
                     print(f"Alice final goodbye: {goodbye_line}")
-                    speak_and_listen(goodbye_line)
+                    # goodbye 可不必可中断，这里保持一致也允许关键词打断
+                    speak_and_listen(goodbye_line, keywords=INTERRUPT_KEYWORDS)
                     sys.exit(0)
 
             user_text = whisper_transcribe(pcm_data)
@@ -212,13 +219,14 @@ if __name__=="__main__":
                 )
                 goodbye_line=get_unique_sentence(goodbye_prompt)
                 print(f"Alice goodbye: {goodbye_line}")
-                speak_and_listen(goodbye_line)
+                speak_and_listen(goodbye_line, keywords=INTERRUPT_KEYWORDS)
                 sys.exit(0)
 
             response=chat_with_gpt(user_text)
-            interrupted = speak_and_listen(response)
+            # 🔑 Only keyword will interrupt Alice's answer
+            interrupted = speak_and_listen(response, keywords=INTERRUPT_KEYWORDS)
             if interrupted:
-                print("🔄 interrupted → enter next round conversation")
+                print("🔄 interrupted by keyword → enter next round conversation")
                 continue
 
     except KeyboardInterrupt:

@@ -1,10 +1,11 @@
+# Jarvis.py
 import cv2, mediapipe as mp, time, os, asyncio, edge_tts, subprocess, queue, webrtcvad
 from dotenv import load_dotenv
 from picamera2 import Picamera2
 import openai, sys, json, tempfile, audioop, sounddevice as sd
 from pydub import AudioSegment
 
-from interruptible_tts import speak_and_listen
+from interruptible_tts import speak_and_listen  # now supports keywords
 
 # === API ===
 load_dotenv()
@@ -168,8 +169,10 @@ picam2.start()
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_drawing = mp.solutions.drawing_utils
+speak_no_interrupt("System ready, please look at the camera.")
+time.sleep(0.2)  # 可选：给播放器一点点缓冲时间
 
-stay_threshold = 3
+stay_threshold = 2
 interaction_mode = False
 stay_start = None
 
@@ -199,7 +202,7 @@ with mp_face_mesh.FaceMesh(
                         interaction_mode = True
                         print("✅ Face stayed 3s → Entering welcome")
 
-                        # GPT生成欢迎词（第一次允许打断）
+                        # GPT welcome (allow keyword interruption)
                         welcome_prompt = (
                             "You are Jarvis, the warm store greeter. "
                             "Welcome the customer to the clothing store. "
@@ -210,14 +213,19 @@ with mp_face_mesh.FaceMesh(
                         welcome = get_unique_sentence(welcome_prompt)
                         print(f"🤖 Jarvis says: {welcome}")
 
-                        interrupted = speak_and_listen(welcome, tts_voice=VOICE_JARVIS)
+                        # 🔑 Only keyword 'stop talking' will interrupt during TTS
+                        interrupted = speak_and_listen(
+                            welcome,
+                            tts_voice=VOICE_JARVIS,
+                            keywords=["stop talking"]
+                        )
 
                         if interrupted:
-                            print("🔄 User interrupted Jarvis → wait with confirm-Alice logic")
-                            # ✅ 第一次等待 7 秒
+                            print("🔄 Keyword interruption detected → wait with confirm-Alice logic")
+                            # ✅ First wait 7s
                             pcm_data = vad_recording(timeout=7)
                             if pcm_data is None:
-                                # 第一次提醒 → 确认是否想了解更多 & 提到Alice
+                                # First reminder
                                 remind_prompt = (
                                     "No one replied for 7 seconds. "
                                     "Generate a short warm confirmation like: "
@@ -229,10 +237,10 @@ with mp_face_mesh.FaceMesh(
                                 print(f"🤖 Jarvis reminder: {remind_line}")
                                 speak_no_interrupt(remind_line)
 
-                                # ✅ 再等第二次 7 秒
+                                # ✅ Second wait 7s
                                 pcm_data = vad_recording(timeout=7)
                                 if pcm_data is None:
-                                    # 还是没人 → 道别并回初始状态
+                                    # Still no response → goodbye & reset
                                     goodbye_prompt = (
                                         "No one replied even after a reminder. "
                                         "Say a short polite goodbye like 'Alright, I’ll let you browse freely. Have a great day!'"
@@ -244,7 +252,7 @@ with mp_face_mesh.FaceMesh(
                                     stay_start = None
                                     continue
 
-                            # ✅ 如果有人说话
+                            # ✅ If someone spoke
                             user_reply = whisper_transcribe(pcm_data)
                             print(f"🗣️ User interrupted with: {user_reply}")
                             if not user_reply.strip():
@@ -285,10 +293,9 @@ with mp_face_mesh.FaceMesh(
                 stay_start = None
 
         if interaction_mode:
-            # ✅ 后续对话录音同样两阶段超时
+            # ✅ Subsequent dialog: same two-phase timeout
             pcm_data = vad_recording(timeout=7)
             if pcm_data is None:
-                # 第一次提醒 → 确认是否想了解更多 & 提到Alice
                 remind_prompt = (
                     "No one replied for 7 seconds. "
                     "Generate a short warm confirmation like: "
@@ -360,4 +367,3 @@ with mp_face_mesh.FaceMesh(
             break
 
 cv2.destroyAllWindows()
-
