@@ -1,10 +1,12 @@
 # Nova.py — Product Agent (Sustainable T‑shirt) with Persona + Memory + Keyword Interrupt
-# Trigger: MPU‑6050 "pickup" (any direction). OLED shows sleeping face while idle.
-# OLED: SH1106; expression library: sleep (animated) / listening (side waves) / speaking (volume→mouth + pupil micro‑movement + blink) / thinking (ellipsis + slow gaze)
+# Trigger 1: MPU‑6050 "pickup" (any direction). OLED shows sleeping face while idle.
+# Trigger 2: TTP223B capacitive touch. Long‑press to wake with progressive eye‑open animation.
+# OLED: SH1106; expression library: sleep (animated) / listening (side waves) / speaking (mouth cycles on TTS) / thinking (ellipsis + slow gaze)
 # Also: happy / surprised / angry / wink on demand
 # I2C wiring: VCC→3.3V, GND→GND, SDA→GPIO2 (Pin 3), SCL→GPIO3 (Pin 5)
 # MPU-6050 addr: AD0=GND → 0x68, AD0=3.3V → 0x69
 # OLED(SH1106) addr: 0x3C / 0x3D
+# TTP223B: VCC→3.3V, GND→GND, OUT→BCM17 (Pin 11). Default active-high.
 
 import os, time, tempfile, queue, json, re, math, glob
 import sounddevice as sd
@@ -234,17 +236,8 @@ EXIT_HARD_NEGATIVE = re.compile(
 )
 
 def detect_exit_intent(user_text: str, session_history=None) -> bool:
-    """
-    Returns True only when the user clearly wants to end.
-    Safeguards:
-      - short affirmatives are NOT exit
-      - if Nova just asked a question, do NOT exit
-      - explicit quit phrases → exit
-      - otherwise strict LLM fallback
-    """
     if not user_text:
         return False
-
     try:
         if session_history:
             last_assistant = next((c for r, c in reversed(session_history) if r == "assistant"), "")
@@ -252,13 +245,10 @@ def detect_exit_intent(user_text: str, session_history=None) -> bool:
                 return False
     except Exception:
         pass
-
     if EXIT_HARD_NEGATIVE.search(user_text):
         return False
-
     if EXIT_HARD_POSITIVE.search(user_text):
         return True
-
     prompt = [
         {"role": "system", "content": (
             "Decide if the user is explicitly ending the conversation NOW. "
@@ -371,22 +361,42 @@ def oled_clear():
 def oled_show_text(line1="", line2="", line3=""):
     return  # keep blank UI
 
-# --- low-level primitives (no head circle, no text) ---
+# --- eye primitives with aperture support ---
 def _eye_open(draw, cx, cy, dx=0.0, dy=0.0):
-    lx = cx - _EYE_OFFSET_X; ly = cy + _EYE_OFFSET_Y
-    rx = cx + _EYE_OFFSET_X; ry = cy + _EYE_OFFSET_Y
-    draw.ellipse((lx-_EYE_R, ly-_EYE_R, lx+_EYE_R, ly+_EYE_R), outline=255, fill=255)
-    draw.ellipse((rx-_EYE_R, ry-_EYE_R, rx+_EYE_R, ry+_EYE_R), outline=255, fill=255)
-    lpx = int(lx + dx); lpy = int(ly + dy)
-    rpx = int(rx + dx); rpy = int(ry + dy)
-    draw.ellipse((lpx-_PUPIL_R, lpy-_PUPIL_R, lpx+_PUPIL_R, lpy+_PUPIL_R), outline=0, fill=0)
-    draw.ellipse((rpx-_PUPIL_R, rpy-_PUPIL_R, rpx+_PUPIL_R, rpy+_PUPIL_R), outline=0, fill=0)
-    draw.point((lpx-1, lpy-1), fill=255)
-    draw.point((rpx-1, rpy-1), fill=255)
+    # full open helper (kept for backward compatibility)
+    _eye_open_fraction(draw, cx, cy, 1.0, dx, dy)
 
 def _eye_close(draw, cx, cy):
+    # fully closed line
     draw.line((cx-_EYE_OFFSET_X-10, cy+_EYE_OFFSET_Y, cx-_EYE_OFFSET_X+10, cy+_EYE_OFFSET_Y),  fill=255, width=2)
     draw.line((cx+_EYE_OFFSET_X-10, cy+_EYE_OFFSET_Y, cx+_EYE_OFFSET_X+10, cy+_EYE_OFFSET_Y),  fill=255, width=2)
+
+def _eye_open_fraction(draw, cx, cy, frac: float, dx=0.0, dy=0.0):
+    """Draw two eyes with an opening fraction in [0..1]."""
+    frac = max(0.0, min(1.0, float(frac)))
+    lx = cx - _EYE_OFFSET_X; ly = cy + _EYE_OFFSET_Y
+    rx = cx + _EYE_OFFSET_X; ry = cy + _EYE_OFFSET_Y
+    # sclera (white)
+    for ex, ey in ((lx, ly), (rx, ry)):
+        draw.ellipse((ex-_EYE_R, ey-_EYE_R, ex+_EYE_R, ey+_EYE_R), outline=255, fill=255)
+        # eyelid mask: cover top/bottom to achieve slit height
+        total_h = _EYE_R * 2
+        slit_h  = max(0, int(round(total_h * frac)))
+        top_cover_h = (total_h - slit_h) // 2
+        bot_cover_h = total_h - slit_h - top_cover_h
+        # top cover
+        if top_cover_h > 0:
+            draw.rectangle((ex-_EYE_R-1, ey-_EYE_R-1, ex+_EYE_R+1, ey-_EYE_R-1+top_cover_h), outline=0, fill=0)
+        # bottom cover
+        if bot_cover_h > 0:
+            draw.rectangle((ex-_EYE_R-1, ey+_EYE_R-bot_cover_h+1, ex+_EYE_R+1, ey+_EYE_R+1), outline=0, fill=0)
+    # pupils only if sufficiently open
+    if frac >= 0.18:
+        lpx = int(lx + dx); lpy = int(ly + dy)
+        rpx = int(rx + dx); rpy = int(ry + dy)
+        draw.ellipse((lpx-_PUPIL_R, lpy-_PUPIL_R, lpx+_PUPIL_R, lpy+_PUPIL_R), outline=0, fill=0)
+        draw.ellipse((rpx-_PUPIL_R, rpy-_PUPIL_R, rpx+_PUPIL_R, rpy+_PUPIL_R), outline=0, fill=0)
+        draw.point((lpx-1, lpy-1), fill=255); draw.point((rpx-1, rpy-1), fill=255)
 
 def _draw_listen_waves(draw):
     cy = _CY
@@ -446,28 +456,31 @@ def _draw_brows(draw, cx, cy, style=None):
         draw.line((cx-26, y, cx-6, y+1), fill=255, width=1)
         draw.line((cx+6,  y+1, cx+26, y), fill=255, width=1)
 
-def _render_face(draw, eyes="open", mouth="flat", pupils=(0.0,0.0), brows=None, wink=False, mouth_y=0, listening_waves=False):
+def _render_face(draw, eyes="open", mouth="flat", pupils=(0.0,0.0), brows=None, wink=False, mouth_y=0, listening_waves=False, eye_aperture: float=None):
     cx, cy = _CX, _CY
-    if eyes == "open":
+    if eye_aperture is not None:
         dx, dy = pupils
-        if wink:
-            draw.line((cx-_EYE_OFFSET_X-10, cy+_EYE_OFFSET_Y, cx-_EYE_OFFSET_X+10, cy+_EYE_OFFSET_Y), fill=255, width=2)
-            rx = cx + _EYE_OFFSET_X; ry = cy + _EYE_OFFSET_Y
-            draw.ellipse((rx-_EYE_R, ry-_EYE_R, rx+_EYE_R, ry+_EYE_R), outline=255, fill=255)
-            rpx = int(rx + dx); rpy = int(ry + dy)
-            draw.ellipse((rpx-_PUPIL_R, rpy-_PUPIL_R, rpx+_PUPIL_R, rpy+_PUPIL_R), outline=0, fill=0)
-            draw.point((rpx-1, rpy-1), fill=255)
-        else:
-            _eye_open(draw, cx, cy, dx=pupils[0], dy=pupils[1])
+        _eye_open_fraction(draw, cx, cy, eye_aperture, dx=dx, dy=dy)
     else:
-        _eye_close(draw, cx, cy)
+        if eyes == "open":
+            dx, dy = pupils
+            if wink:
+                draw.line((cx-_EYE_OFFSET_X-10, cy+_EYE_OFFSET_Y, cx-_EYE_OFFSET_X+10, cy+_EYE_OFFSET_Y), fill=255, width=2)
+                rx = cx + _EYE_OFFSET_X; ry = cy + _EYE_OFFSET_Y
+                draw.ellipse((rx-_EYE_R, ry-_EYE_R, rx+_EYE_R, ry+_EYE_R), outline=255, fill=255)
+                rpx = int(rx + dx); rpy = int(ry + dy)
+                draw.ellipse((rpx-_PUPIL_R, rpy-_PUPIL_R, rpx+_PUPIL_R, rpy+_PUPIL_R), outline=0, fill=0)
+                draw.point((rpx-1, rpy-1), fill=255)
+            else:
+                _eye_open(draw, cx, cy, dx=pupils[0], dy=pupils[1])
+        else:
+            _eye_close(draw, cx, cy)
     _draw_mouth(draw, cx, cy, mouth, y_offset=mouth_y)
     if brows: _draw_brows(draw, cx, cy, brows)
     if listening_waves:
         _draw_listen_waves(draw)
 
 def oled_set_expression(mode: str):
-    """Switch expression instantly (non-animated), no text, no head circle."""
     global _current_expr
     _current_expr = mode
     if not _oled: return
@@ -497,12 +510,10 @@ from collections import deque as _deque
 _talk_anim_stop = Event()
 _talk_anim_thread = None
 _level_queue = _deque(maxlen=8)
-_tts_started = False  # switch from thinking→speaking on first audible TTS level
+_tts_started = False
 _last_level_ts = 0.0  # last time we "heard" our own TTS
 
 def _talking_mouth(t: float) -> str:
-    """Cycle mouth shapes regardless of exact dB once we're 'speaking'."""
-    # ~8 Hz rhythm → every ~125 ms change a shape
     phase = int((t * 8.0) % 4)
     return ("chat_s", "chat_m", "chat_l", "chat_m")[phase]
 
@@ -517,16 +528,13 @@ def _talk_anim_worker():
     BLINK_PERIOD = 4.2
     BLINK_DUR    = 0.12
     SILENCE_HOLD = 0.30  # if >300ms no TTS energy, stop mouth cycling
-
     while not _talk_anim_stop.is_set():
         now = time.time()
         db = (sum(_level_queue)/len(_level_queue)) if _level_queue else -120.0
         speaking_active = (now - _last_level_ts) < SILENCE_HOLD
-
         mouth = _talking_mouth(now) if speaking_active else "flat"
         dx, dy = _pupil_offsets_for_db(db, now)
         blinking = (now % BLINK_PERIOD) < BLINK_DUR
-
         with canvas(_oled) as draw:
             if blinking:
                 _eye_close(draw, _CX, _CY)
@@ -563,17 +571,11 @@ def oled_on_tts_level(level_db: float):
         if level_db is None: level_db = -120.0
         level_db = max(-120.0, min(0.0, float(level_db)))
         _level_queue.append(level_db)
-
-        # refresh "we are speaking" timestamp whenever audible energy exists
         if level_db > -60.0:
             _last_level_ts = time.time()
-
-        # first audible kick: stop thinking → start speaking
         if (not _tts_started) and (level_db > -55.0):
-            try:
-                oled_think_stop()
-            except Exception:
-                pass
+            try: oled_think_stop()
+            except Exception: pass
             oled_talk_start()
             _tts_started = True
     except Exception:
@@ -595,17 +597,14 @@ def _sleep_anim_worker():
         draw.line((x, y, x+w, y), fill=255, width=1)
         draw.line((x+w, y, x, y+h), fill=255, width=1)
         draw.line((x, y+h, x+w, y+h), fill=255, width=1)
-
     while not _sleep_anim_stop.is_set():
         t = time.time() - t0
         breath = 0.5 * (1 + math.sin(t * 2.0))
         mouth_offset = int(round(breath * 2))
         mouth_kind = "o" if breath > 0.75 else "flat"
-
         z1_y -= z_speed; z2_y -= z_speed; z3_y -= z_speed
         def wrap(y): return ZY_TOP + 2*Z_SPACING if y < 0 else y
         z1_y, z2_y, z3_y = wrap(z1_y), wrap(z2_y), wrap(z3_y)
-
         with canvas(_oled) as draw:
             _eye_close(draw, _CX, _CY)
             _draw_mouth(draw, _CX, _CY, mouth_kind, y_offset=mouth_offset)
@@ -638,7 +637,6 @@ _think_anim_stop = Event()
 _think_anim_thread = None
 
 def _draw_ellipsis(draw, x, y, phase):
-    # Three bouncing dots as ellipsis
     for i, dx in enumerate([0, 12, 24]):
         p = (phase + i/3.0) % 1.0
         r = 1 + int(2 * (0.5 - abs(p - 0.5)) * 2)  # triangle wave → 1..3 px
@@ -680,7 +678,6 @@ def oled_think_start():
     _think_anim_thread.start()
 
 def oled_think_stop():
-    # Stop thinking animation WITHOUT switching to any static face.
     global _think_anim_thread
     _think_anim_stop.set()
     if _think_anim_thread and _think_anim_thread.is_alive():
@@ -757,11 +754,107 @@ def setup_motion_sensor():
     print(f"🧭 MPU-6050 ready (WHO_AM_I=0x{who:02X}) on /dev/i2c-{I2C_BUS} addr=0x{MPU_ADDR:02X}")
     setup_oled(I2C_BUS)
 
-def wait_for_pickup():
-    print("🟢 Idle: waiting for pickup (MPU‑6050)...")
-    oled_sleep_start()
-    consec=0
+# ==== TTP223B touch activation ====
+import RPi.GPIO as GPIO
+TOUCH_PIN = 17              # BCM numbering
+TOUCH_ACTIVE_HIGH = True    # set False if your board outputs LOW on touch
+TOUCH_DEBOUNCE_MS = 120
+TOUCH_COOLDOWN_S = 0.6
+_last_touch_ts = 0.0
+
+# Long‑press config for progressive wake
+TOUCH_LONGPRESS_S = 3.0     # hold duration to fully wake (was 1.2s)
+APERTURE_EPS      = 0.002   # minimal change to redraw
+
+def setup_touch():
+    GPIO.setmode(GPIO.BCM)
+    pud = GPIO.PUD_DOWN if TOUCH_ACTIVE_HIGH else GPIO.PUD_UP
+    GPIO.setup(TOUCH_PIN, GPIO.IN, pull_up_down=pud)
+    print(f"🖐️  TTP223B ready on BCM{TOUCH_PIN} (active-{'HIGH' if TOUCH_ACTIVE_HIGH else 'LOW'})")
+
+def touch_active() -> bool:
+    v = GPIO.input(TOUCH_PIN)
+    return bool(v if TOUCH_ACTIVE_HIGH else (not v))
+
+def _debounced_touch(now: float) -> bool:
+    global _last_touch_ts
+    if not touch_active():
+        return False
+    time.sleep(TOUCH_DEBOUNCE_MS/1000.0)
+    if not touch_active():
+        return False
+    if (now - _last_touch_ts) < TOUCH_COOLDOWN_S:
+        return False
+    _last_touch_ts = now
+    return True
+
+# Easing: smoothstep (3x^2 - 2x^3)
+def _ease_smoothstep(x: float) -> float:
+    x = max(0.0, min(1.0, x))
+    return x*x*(3 - 2*x)
+
+def _draw_wake_progress(aperture: float, happy_hint: bool=False):
+    """Render progressive eye opening at given aperture (0..1)."""
+    if not _oled: return
+    dx = (aperture * _PUPIL_MAX_DX) * (1.0 if math.sin(time.time()*2.0) > 0 else -1.0)
+    dy = math.sin(time.time() * 5.5) * (_PUPIL_MAX_DY * 0.4)
+    with canvas(_oled) as draw:
+        _render_face(draw, mouth="flat" if aperture < 0.8 else "smile",
+                     pupils=(dx, dy), brows="neutral" if not happy_hint else "happy",
+                     eye_aperture=aperture)
+
+# === NEW === After‑farewell gentle close to sleep
+def oled_close_eyes_to_sleep(duration=3.0):
+    """After farewell: gently close eyes to sleep over `duration` seconds."""
+    if not _oled:
+        return
+    try:
+        oled_talk_stop()
+    except Exception:
+        pass
+    try:
+        oled_think_stop()
+    except Exception:
+        pass
+
+    start = time.time()
+    last_drawn = -1.0
     while True:
+        t = time.time() - start
+        if t >= duration:
+            break
+        u = min(1.0, t / duration)               # 0 → 1
+        aperture = _ease_smoothstep(1.0 - u)      # 1 → 0 with easing
+        if abs(aperture - last_drawn) > APERTURE_EPS:
+            _draw_wake_progress(aperture, happy_hint=False)
+            last_drawn = aperture
+        time.sleep(POLL_INTERVAL)
+    oled_sleep_start()
+
+# ==== dual activation wait (touch OR pickup) with long‑press progressive wake ====
+def wait_for_activation():
+    """
+    Idle loop. Either:
+      - Long‑press touch: eyes slowly open; on release before threshold they close back.
+      - Pickup motion: instant activation, overrides any touch animation.
+    """
+    print("🟢 Idle: waiting for activation (Touch long‑press OR Pickup)…")
+    oled_sleep_start()
+
+    # State for long‑press animation
+    pressing = False
+    closing = False
+    press_start = 0.0
+    release_start = 0.0
+    aperture = 0.0          # current eye opening [0..1]
+    last_drawn = -1.0       # last aperture drawn (to throttle redraws)
+
+    consec = 0  # for pickup
+
+    while True:
+        now = time.time()
+
+        # 1) Pickup path (always available)
         ax,ay,az,gx,gy,gz = _read_sensors()
         a_mag = math.sqrt(ax*ax + ay*ay + az*az)
         g_mag = math.sqrt(gx*gx + gy*gy + gz*gz)
@@ -775,15 +868,58 @@ def wait_for_pickup():
             g2 = math.sqrt(gx2*gx2 + gy2*gy2 + gz2*gz2)
             if (abs(a2-GRAVITY)>ACCEL_DELTA_G) or (g2>GYRO_SUM_DPS):
                 print("✋ Pickup detected → activating Nova session")
-                oled_sleep_stop()
+                try: oled_sleep_stop()
+                except Exception: pass
                 oled_clear()
                 oled_set_expression("listening")
                 return
             consec = 0
+
+        # 2) Touch path with long‑press progressive wake
+        if touch_active():
+            if not pressing:
+                pressing = True
+                closing = False
+                press_start = now
+                try: oled_sleep_stop()
+                except Exception: pass
+            hold_t = max(0.0, now - press_start)
+            raw_frac = min(1.0, hold_t / TOUCH_LONGPRESS_S)
+            aperture = _ease_smoothstep(raw_frac)
+            if abs(aperture - last_drawn) > APERTURE_EPS:
+                _draw_wake_progress(aperture)
+                last_drawn = aperture
+            if raw_frac >= 1.0:
+                print("👆 Long‑press confirmed → activating Nova session")
+                oled_clear()
+                oled_set_expression("listening")
+                return
+        else:
+            if pressing:
+                pressing = False
+                if 0.0 < aperture < 1.0:
+                    closing = True
+                    release_start = now
+                    release_from = aperture
+                else:
+                    closing = False
+
+            if closing:
+                elapsed = now - release_start
+                raw_back = max(0.0, 1.0 - (elapsed / TOUCH_LONGPRESS_S))
+                back_frac = max(0.0, release_from * raw_back)
+                aperture = _ease_smoothstep(back_frac)
+                if abs(aperture - last_drawn) > APERTURE_EPS:
+                    _draw_wake_progress(aperture)
+                    last_drawn = aperture
+                if aperture <= 0.001:
+                    closing = False
+                    oled_sleep_start()
+
         time.sleep(POLL_INTERVAL)
 
-# ==== farewell helper (smile while saying goodbye) ====
-def speak_farewell_with_smile(text: str):
+# ==== farewell helper (now with slow close to sleep) ====
+def speak_farewell_with_smile(text: str, close_to_sleep=True, close_duration=3.0):
     text = clean_for_speech(text)
     print(f"Nova farewell: {text}")
     oled_set_expression("happy")
@@ -794,9 +930,11 @@ def speak_farewell_with_smile(text: str):
     oled_talk_stop()
     oled_set_expression("happy")
     time.sleep(0.6)
+    if close_to_sleep:
+        oled_close_eyes_to_sleep(duration=close_duration)
     return _
 
-# ==== LLM with thinking wrapper (can keep thinking alive) ====
+# ==== LLM with thinking wrapper ====
 def llm_generate_with_thinking(mem, first_greeting_done: bool, kind: str,
                                user_text: str = "", session_history=None,
                                stop_after: bool = True) -> str:
@@ -809,7 +947,7 @@ def llm_generate_with_thinking(mem, first_greeting_done: bool, kind: str,
     finally:
         try:
             if stop_after:
-                oled_think_stop()  # only stop if requested
+                oled_think_stop()
         except Exception:
             pass
 
@@ -848,7 +986,7 @@ def run_nova_session():
                 pcm = record_until_silence(timeout=FIRST_WAIT_TIMEOUT)
                 if pcm is None:
                     bye = llm_generate_with_thinking(mem, first_greeting_done, kind="farewell", session_history=session_history)
-                    speak_farewell_with_smile(bye)
+                    speak_farewell_with_smile(bye, close_to_sleep=True, close_duration=3.0)
                     session_history.append(("assistant", clean_for_speech(bye)))
                     return
 
@@ -870,7 +1008,7 @@ def run_nova_session():
             explicit_quit = txt.lower().strip() in {"bye","goodbye","exit","quit"}
             if explicit_quit or detect_exit_intent(txt, session_history=session_history):
                 farewell = llm_generate_with_thinking(mem, first_greeting_done, kind="farewell", session_history=session_history)
-                speak_farewell_with_smile(farewell)
+                speak_farewell_with_smile(farewell, close_to_sleep=True, close_duration=3.0)
                 session_history.append(("assistant", clean_for_speech(farewell)))
                 if len(session_history) >= 2:
                     last_user = next((c for r,c in reversed(session_history) if r=="user"), "")
@@ -882,16 +1020,14 @@ def run_nova_session():
             if new_prefs:
                 mem = merge_user_prefs(mem, new_prefs); save_memory(mem)
 
-            # === Answer phase: KEEP thinking until TTS audio truly starts ===
             ans = llm_generate_with_thinking(mem, first_greeting_done, kind="answer",
                                              user_text=txt, session_history=session_history,
-                                             stop_after=False)  # keep thinking alive
+                                             stop_after=False)
             ans = clean_for_speech(ans)
             print(f"Nova answer: {ans}")
             session_history.append(("assistant", ans))
             update_conversation_summary(mem, session_history, txt, ans)
 
-            # Let on_tts_level flip to speaking at first audio frame
             interrupted = speak_and_listen(ans, tts_voice=VOICE, keywords=INTERRUPT_KEYWORDS,
                                            on_tts_level=oled_on_tts_level)
             oled_talk_stop()
@@ -899,7 +1035,6 @@ def run_nova_session():
                 print("🔄 Interrupted by keyword — listening for the next input...")
                 continue
 
-            # post‑reaction
             low_txt = txt.lower()
             if "wow" in low_txt or "amazing" in low_txt:
                 oled_set_expression("surprised")
@@ -916,8 +1051,9 @@ def run_nova_session():
 if __name__ == "__main__":
     try:
         setup_motion_sensor()
+        setup_touch()
         while True:
-            wait_for_pickup()
+            wait_for_activation()   # Touch long‑press OR Pickup
             run_nova_session()
     finally:
         try:
@@ -926,5 +1062,9 @@ if __name__ == "__main__":
             pass
         try:
             if _bus: _bus.close()
+        except Exception:
+            pass
+        try:
+            GPIO.cleanup()
         except Exception:
             pass
