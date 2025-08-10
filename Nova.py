@@ -1,7 +1,7 @@
 # Nova.py — Product Agent (Sustainable T‑shirt) with Persona + Memory + Keyword Interrupt
 # Trigger: MPU‑6050 "pickup" (any direction). OLED shows sleeping face while idle.
-# OLED: SH1106；表情库：sleep(动态) / listening（两侧Wi‑Fi括号波纹） / speaking(音量→倒D嘴+瞳孔微动+眨眼) / thinking（省略号+缓慢扫视）
-# 以及 happy / surprised / angry / wink 可随时调用
+# OLED: SH1106; expression library: sleep (animated) / listening (side waves) / speaking (volume→mouth + pupil micro‑movement + blink) / thinking (ellipsis + slow gaze)
+# Also: happy / surprised / angry / wink on demand
 # I2C wiring: VCC→3.3V, GND→GND, SDA→GPIO2 (Pin 3), SCL→GPIO3 (Pin 5)
 # MPU-6050 addr: AD0=GND → 0x68, AD0=3.3V → 0x69
 # OLED(SH1106) addr: 0x3C / 0x3D
@@ -245,7 +245,6 @@ def detect_exit_intent(user_text: str, session_history=None) -> bool:
     if not user_text:
         return False
 
-    # If last Nova turn ends with a question, user's next short reply is likely an answer → don't exit
     try:
         if session_history:
             last_assistant = next((c for r, c in reversed(session_history) if r == "assistant"), "")
@@ -254,15 +253,12 @@ def detect_exit_intent(user_text: str, session_history=None) -> bool:
     except Exception:
         pass
 
-    # Short acknowledgements are never exit
     if EXIT_HARD_NEGATIVE.search(user_text):
         return False
 
-    # Explicit farewells / cancel → exit
     if EXIT_HARD_POSITIVE.search(user_text):
         return True
 
-    # LLM fallback (strict)
     prompt = [
         {"role": "system", "content": (
             "Decide if the user is explicitly ending the conversation NOW. "
@@ -389,25 +385,23 @@ def _eye_open(draw, cx, cy, dx=0.0, dy=0.0):
     draw.point((rpx-1, rpy-1), fill=255)
 
 def _eye_close(draw, cx, cy):
-    # draw two short horizontal lines as closed eyelids
     draw.line((cx-_EYE_OFFSET_X-10, cy+_EYE_OFFSET_Y, cx-_EYE_OFFSET_X+10, cy+_EYE_OFFSET_Y),  fill=255, width=2)
     draw.line((cx+_EYE_OFFSET_X-10, cy+_EYE_OFFSET_Y, cx+_EYE_OFFSET_X+10, cy+_EYE_OFFSET_Y),  fill=255, width=2)
 
-# --- NEW: listening side waves (Wi‑Fi‑like brackets) ---
 def _draw_listen_waves(draw):
     cy = _CY
     thickness = 2
-    for i in range(1,4):  # left "("
+    cx_left  = 20
+    cx_right = OLED_WIDTH - 20
+    for i in range(1, 4):
         w = 6 + i*4
         h = 14 + i*3
-        cx = 10
-        bbox = (cx-w, cy-h, cx+w, cy+h)
+        bbox = (cx_left - w, cy - h, cx_left + w, cy + h)
         draw.arc(bbox, start=70, end=290, fill=255, width=thickness)
-    for i in range(1,4):  # right ")"
+    for i in range(1, 4):
         w = 6 + i*4
         h = 14 + i*3
-        cx = OLED_WIDTH-10
-        bbox = (cx-w, cy-h, cx+w, cy+h)
+        bbox = (cx_right - w, cy - h, cx_right + w, cy + h)
         draw.arc(bbox, start=-110, end=110, fill=255, width=thickness)
 
 def _draw_mouth(draw, cx, cy, kind="flat", y_offset=0):
@@ -422,31 +416,35 @@ def _draw_mouth(draw, cx, cy, kind="flat", y_offset=0):
     elif kind == "frown":
         draw.arc((cx-16, cy+6+y_offset, cx+16, cy+22+y_offset), start=180, end=360, fill=255, width=2)
     elif kind == "d_down_s":
-         top_y = cy+6+y_offset
-         draw.line((cx-10, top_y, cx+10, top_y), fill=255, width=2)
-         draw.arc((cx-10, top_y-2, cx+10, top_y+18), start=0, end=180, fill=255, width=2)
+        top_y = cy+6+y_offset
+        draw.line((cx-10, top_y, cx+10, top_y), fill=255, width=2)
+        draw.arc((cx-10, top_y-2, cx+10, top_y+18), start=0, end=180, fill=255, width=2)
     elif kind == "d_down_m":
-         top_y = cy+5+y_offset
-         draw.line((cx-12, top_y, cx+12, top_y), fill=255, width=3)
-         draw.arc((cx-12, top_y-2, cx+12, top_y+20), start=0, end=180, fill=255, width=3)
+        top_y = cy+5+y_offset
+        draw.line((cx-12, top_y, cx+12, top_y), fill=255, width=3)
+        draw.arc((cx-12, top_y-2, cx+12, top_y+20), start=0, end=180, fill=255, width=3)
     elif kind == "d_down_l":
-         top_y = cy+4+y_offset
-         draw.line((cx-16, top_y, cx+16, top_y), fill=255, width=4)
-         draw.arc((cx-16, top_y-2, cx+16, top_y+22), start=0, end=180, fill=255, width=4)
+        top_y = cy+4+y_offset
+        draw.line((cx-16, top_y, cx+16, top_y), fill=255, width=4)
+        draw.arc((cx-16, top_y-2, cx+16, top_y+22), start=0, end=180, fill=255, width=4)
     elif kind == "chat_s":
-         draw.ellipse((cx-10, cy+8+y_offset, cx+10, cy+14+y_offset), outline=255, fill=0)
+        draw.ellipse((cx-10, cy+8+y_offset, cx+10, cy+14+y_offset), outline=255, fill=0)
     elif kind == "chat_m":
-         draw.ellipse((cx-10, cy+6+y_offset, cx+10, cy+16+y_offset), outline=255, fill=0)
+        draw.ellipse((cx-10, cy+6+y_offset, cx+10, cy+16+y_offset), outline=255, fill=0)
     elif kind == "chat_l":
-         draw.ellipse((cx-10, cy+4+y_offset, cx+10, cy+18+y_offset), outline=255, fill=0)
+        draw.ellipse((cx-10, cy+4+y_offset, cx+10, cy+18+y_offset), outline=255, fill=0)
 
 def _draw_brows(draw, cx, cy, style=None):
     if style == "angry":
-        draw.line((cx-22, cy-18, cx-8, cy-14), fill=255, width=2)
+        draw.line((cx-22, cy-18, cx-8,  cy-14), fill=255, width=2)
         draw.line((cx+8,  cy-14, cx+22, cy-18), fill=255, width=2)
     elif style == "happy":
-        draw.arc((cx-26, cy-22, cx-4, cy-10), start=200, end=350, fill=255, width=1)
+        draw.arc((cx-26, cy-22, cx-4,  cy-10), start=200, end=350, fill=255, width=1)
         draw.arc((cx+4,  cy-22, cx+26, cy-10), start=190, end=340, fill=255, width=1)
+    elif style == "neutral":
+        y = cy - 16
+        draw.line((cx-26, y, cx-6, y+1), fill=255, width=1)
+        draw.line((cx+6,  y+1, cx+26, y), fill=255, width=1)
 
 def _render_face(draw, eyes="open", mouth="flat", pupils=(0.0,0.0), brows=None, wink=False, mouth_y=0, listening_waves=False):
     cx, cy = _CX, _CY
@@ -477,7 +475,8 @@ def oled_set_expression(mode: str):
         if mode == "sleep":
             _render_face(draw, eyes="closed", mouth="flat")
         elif mode == "listening":
-            _render_face(draw, eyes="open", mouth="flat", pupils=(0,0), listening_waves=True)
+            _render_face(draw, eyes="open", mouth="flat", pupils=(0,0),
+                         brows="neutral", listening_waves=True)
         elif mode == "happy":
             _render_face(draw, eyes="open", mouth="smile", pupils=(0,0), brows="happy")
         elif mode == "surprised":
@@ -487,21 +486,25 @@ def oled_set_expression(mode: str):
         elif mode == "wink":
             _render_face(draw, eyes="open", mouth="smile", pupils=(0,0), wink=True)
         elif mode == "speaking":
-            _render_face(draw, eyes="open", mouth="d_down_m", pupils=(0,0))
-        elif mode == "thinking":  # NEW
-            _render_face(draw, eyes="open", mouth="smile", pupils=(0,0))
+            _render_face(draw, eyes="open", mouth="d_down_m", pupils=(0,0), brows="happy")
+        elif mode == "thinking":
+            _render_face(draw, eyes="open", mouth="smile", pupils=(0,0), brows="happy")
         else:
             _render_face(draw, eyes="open", mouth="flat", pupils=(0,0))
 
 # ==== speaking animation (mode: speaking) ====
+from collections import deque as _deque
 _talk_anim_stop = Event()
 _talk_anim_thread = None
-_level_queue = deque(maxlen=8)
+_level_queue = _deque(maxlen=8)
+_tts_started = False  # switch from thinking→speaking on first audible TTS level
+_last_level_ts = 0.0  # last time we "heard" our own TTS
 
-def _mouth_from_db(db: float) -> str:
-    if db < -50:    return "chat_s"
-    if db < -38:    return "chat_m"
-    return "chat_l"
+def _talking_mouth(t: float) -> str:
+    """Cycle mouth shapes regardless of exact dB once we're 'speaking'."""
+    # ~8 Hz rhythm → every ~125 ms change a shape
+    phase = int((t * 8.0) % 4)
+    return ("chat_s", "chat_m", "chat_l", "chat_m")[phase]
 
 def _pupil_offsets_for_db(db: float, t: float):
     norm = max(0.0, min(1.0, (db + 60.0) / 60.0))
@@ -513,43 +516,66 @@ def _talk_anim_worker():
     if not _oled: return
     BLINK_PERIOD = 4.2
     BLINK_DUR    = 0.12
+    SILENCE_HOLD = 0.30  # if >300ms no TTS energy, stop mouth cycling
+
     while not _talk_anim_stop.is_set():
-        db = (sum(_level_queue)/len(_level_queue)) if _level_queue else -120.0
-        mouth = _mouth_from_db(db)
         now = time.time()
-        blinking = (now % BLINK_PERIOD) < BLINK_DUR
+        db = (sum(_level_queue)/len(_level_queue)) if _level_queue else -120.0
+        speaking_active = (now - _last_level_ts) < SILENCE_HOLD
+
+        mouth = _talking_mouth(now) if speaking_active else "flat"
         dx, dy = _pupil_offsets_for_db(db, now)
+        blinking = (now % BLINK_PERIOD) < BLINK_DUR
+
         with canvas(_oled) as draw:
             if blinking:
                 _eye_close(draw, _CX, _CY)
             else:
                 _eye_open(draw, _CX, _CY, dx=dx, dy=dy)
             _draw_mouth(draw, _CX, _CY, mouth)
+            _draw_brows(draw, _CX, _CY, style="happy")
         time.sleep(0.06)
 
 def oled_talk_start():
-    global _talk_anim_thread
+    global _talk_anim_thread, _tts_started, _last_level_ts
     if not _oled: return
+    _tts_started = True
     _level_queue.clear()
     _talk_anim_stop.clear()
+    _last_level_ts = time.time()  # enter speaking rhythm immediately
     oled_set_expression("speaking")
     _talk_anim_thread = Thread(target=_talk_anim_worker, daemon=True)
     _talk_anim_thread.start()
 
 def oled_talk_stop():
-    global _talk_anim_thread
+    global _talk_anim_thread, _tts_started
     if not _oled: return
     _talk_anim_stop.set()
     if _talk_anim_thread and _talk_anim_thread.is_alive():
         _talk_anim_thread.join(timeout=0.5)
     _talk_anim_thread = None
+    _tts_started = False
     oled_set_expression("listening")
 
 def oled_on_tts_level(level_db: float):
+    global _tts_started, _last_level_ts
     try:
         if level_db is None: level_db = -120.0
         level_db = max(-120.0, min(0.0, float(level_db)))
         _level_queue.append(level_db)
+
+        # refresh "we are speaking" timestamp whenever audible energy exists
+        if level_db > -60.0:
+            _last_level_ts = time.time()
+
+        # first audible kick: stop thinking → start speaking
+        if (not _tts_started) and (level_db > -55.0):
+            try:
+                oled_think_stop()
+            except Exception:
+                pass
+            oled_talk_start()
+            _tts_started = True
     except Exception:
         pass
 
@@ -607,7 +633,7 @@ def oled_sleep_stop():
 def oled_show_sleep():      oled_sleep_start()
 def oled_show_listening():  oled_set_expression("listening")
 
-# ==== NEW: thinking animation (mode: thinking) ====
+# ==== thinking animation (mode: thinking) ====
 _think_anim_stop = Event()
 _think_anim_thread = None
 
@@ -654,13 +680,12 @@ def oled_think_start():
     _think_anim_thread.start()
 
 def oled_think_stop():
+    # Stop thinking animation WITHOUT switching to any static face.
     global _think_anim_thread
     _think_anim_stop.set()
     if _think_anim_thread and _think_anim_thread.is_alive():
         _think_anim_thread.join(timeout=0.5)
     _think_anim_thread = None
-    # 思考结束后直接进入“speaking”静态首帧（随后 oled_talk_start 接管动画）
-    oled_set_expression("speaking")
 
 # ==== MPU‑6050 pickup activation ====
 I2C_BUS = 1
@@ -757,7 +782,7 @@ def wait_for_pickup():
             consec = 0
         time.sleep(POLL_INTERVAL)
 
-# ==== farewell helper (SMILE WHILE SAYING GOODBYE) ====
+# ==== farewell helper (smile while saying goodbye) ====
 def speak_farewell_with_smile(text: str):
     text = clean_for_speech(text)
     print(f"Nova farewell: {text}")
@@ -771,8 +796,10 @@ def speak_farewell_with_smile(text: str):
     time.sleep(0.6)
     return _
 
-# ==== LLM with thinking wrapper (NEW) ====
-def llm_generate_with_thinking(mem, first_greeting_done: bool, kind: str, user_text: str = "", session_history=None) -> str:
+# ==== LLM with thinking wrapper (can keep thinking alive) ====
+def llm_generate_with_thinking(mem, first_greeting_done: bool, kind: str,
+                               user_text: str = "", session_history=None,
+                               stop_after: bool = True) -> str:
     try:
         oled_think_start()
     except Exception:
@@ -781,7 +808,8 @@ def llm_generate_with_thinking(mem, first_greeting_done: bool, kind: str, user_t
         return llm_generate(mem, first_greeting_done, kind=kind, user_text=user_text, session_history=session_history)
     finally:
         try:
-            oled_think_stop()  # → directly switch to "speaking"
+            if stop_after:
+                oled_think_stop()  # only stop if requested
         except Exception:
             pass
 
@@ -839,7 +867,6 @@ def run_nova_session():
             print(f"👤 User: {txt}")
             session_history.append(("user", txt))
 
-            # explicit quick check + robust exit-intent with history
             explicit_quit = txt.lower().strip() in {"bye","goodbye","exit","quit"}
             if explicit_quit or detect_exit_intent(txt, session_history=session_history):
                 farewell = llm_generate_with_thinking(mem, first_greeting_done, kind="farewell", session_history=session_history)
@@ -855,7 +882,24 @@ def run_nova_session():
             if new_prefs:
                 mem = merge_user_prefs(mem, new_prefs); save_memory(mem)
 
-            # Optional demo emotion triggers
+            # === Answer phase: KEEP thinking until TTS audio truly starts ===
+            ans = llm_generate_with_thinking(mem, first_greeting_done, kind="answer",
+                                             user_text=txt, session_history=session_history,
+                                             stop_after=False)  # keep thinking alive
+            ans = clean_for_speech(ans)
+            print(f"Nova answer: {ans}")
+            session_history.append(("assistant", ans))
+            update_conversation_summary(mem, session_history, txt, ans)
+
+            # Let on_tts_level flip to speaking at first audio frame
+            interrupted = speak_and_listen(ans, tts_voice=VOICE, keywords=INTERRUPT_KEYWORDS,
+                                           on_tts_level=oled_on_tts_level)
+            oled_talk_stop()
+            if interrupted:
+                print("🔄 Interrupted by keyword — listening for the next input...")
+                continue
+
+            # post‑reaction
             low_txt = txt.lower()
             if "wow" in low_txt or "amazing" in low_txt:
                 oled_set_expression("surprised")
@@ -863,22 +907,6 @@ def run_nova_session():
                 oled_set_expression("happy")
             elif "no" in low_txt or "angry" in low_txt:
                 oled_set_expression("angry")
-
-            # THINKING → (auto switch to SPEAKING) → TTS
-            ans = llm_generate_with_thinking(mem, first_greeting_done, kind="answer", user_text=txt, session_history=session_history)
-            ans = clean_for_speech(ans)
-            print(f"Nova answer: {ans}")
-            session_history.append(("assistant", ans))
-            update_conversation_summary(mem, session_history, txt, ans)
-
-            # Speak immediately; thinking wrapper already switched to "speaking"
-            oled_talk_start()
-            interrupted = speak_and_listen(ans, tts_voice=VOICE, keywords=INTERRUPT_KEYWORDS,
-                                           on_tts_level=oled_on_tts_level)
-            oled_talk_stop()
-            if interrupted:
-                print("🔄 Interrupted by keyword — listening for the next input...")
-                continue
 
     except KeyboardInterrupt:
         print("\n👋 Session stopped by user.")
