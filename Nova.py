@@ -353,14 +353,14 @@ def _draw_listen_waves(draw):
     cy = _CY
     gap = 6
     thickness = 2
-    # Left side "(" style, opening outward to the left
+    # Left side "(" style
     for i in range(1,4):
         w = 6 + i*4
         h = 14 + i*3
-        cx = 10  # near left bezel
+        cx = 10
         bbox = (cx-w, cy-h, cx+w, cy+h)
         draw.arc(bbox, start=70, end=290, fill=255, width=thickness)
-    # Right side ")" style, opening outward to the right
+    # Right side ")" style
     for i in range(1,4):
         w = 6 + i*4
         h = 14 + i*3
@@ -383,7 +383,6 @@ def _draw_mouth(draw, cx, cy, kind="flat", y_offset=0):
     elif kind == "d_down_s":
          top_y = cy+6+y_offset
          draw.line((cx-10, top_y, cx+10, top_y), fill=255, width=2)
-    # ↓ 这里改成 start=0, end=180，让弧线朝下
          draw.arc((cx-10, top_y-2, cx+10, top_y+18), start=0, end=180, fill=255, width=2)
     elif kind == "d_down_m":
          top_y = cy+5+y_offset
@@ -393,14 +392,12 @@ def _draw_mouth(draw, cx, cy, kind="flat", y_offset=0):
          top_y = cy+4+y_offset
          draw.line((cx-16, top_y, cx+16, top_y), fill=255, width=4)
          draw.arc((cx-16, top_y-2, cx+16, top_y+22), start=0, end=180, fill=255, width=4)
-    elif kind == "chat_s":  # 小声：扁一些
-    # 椭圆开口，留黑心（outline=255, fill=0）
+    elif kind == "chat_s":  # soft
          draw.ellipse((cx-10, cy+8+y_offset, cx+10, cy+14+y_offset), outline=255, fill=0)
-    elif kind == "chat_m":  # 正常：高度中等
+    elif kind == "chat_m":  # normal
          draw.ellipse((cx-10, cy+6+y_offset, cx+10, cy+16+y_offset), outline=255, fill=0)
-    elif kind == "chat_l":  # 大声：更高
+    elif kind == "chat_l":  # loud
          draw.ellipse((cx-10, cy+4+y_offset, cx+10, cy+18+y_offset), outline=255, fill=0)
-
 
 def _draw_brows(draw, cx, cy, style=None):
     if style == "angry":
@@ -440,7 +437,6 @@ def oled_set_expression(mode: str):
         if mode == "sleep":
             _render_face(draw, eyes="closed", mouth="flat")
         elif mode == "listening":
-            # No ears; draw side Wi‑Fi‑like brackets to indicate listening
             _render_face(draw, eyes="open", mouth="flat", pupils=(0,0), listening_waves=True)
         elif mode == "happy":
             _render_face(draw, eyes="open", mouth="smile", pupils=(0,0), brows="happy")
@@ -451,7 +447,6 @@ def oled_set_expression(mode: str):
         elif mode == "wink":
             _render_face(draw, eyes="open", mouth="smile", pupils=(0,0), wink=True)
         elif mode == "speaking":
-            # Initial speaking frame uses mid D‑down mouth; animation thread will take over
             _render_face(draw, eyes="open", mouth="d_down_m", pupils=(0,0))
         else:
             _render_face(draw, eyes="open", mouth="flat", pupils=(0,0))
@@ -667,6 +662,25 @@ def wait_for_pickup():
             consec = 0
         time.sleep(POLL_INTERVAL)
 
+# ==== farewell helper (SMILE WHILE SAYING GOODBYE) ====
+def speak_farewell_with_smile(text: str):
+    """Switch to a happy face, then speak the farewell with mouth animation;
+    after speaking, keep smiling briefly for a natural end."""
+    text = clean_for_speech(text)
+    print(f"Nova farewell: {text}")
+    # Pre-speech smile
+    oled_set_expression("happy")
+    time.sleep(0.25)
+    # Speak with mouth animation
+    oled_talk_start()
+    _ = speak_and_listen(text, tts_voice=VOICE, keywords=INTERRUPT_KEYWORDS,
+                         on_tts_level=oled_on_tts_level)
+    oled_talk_stop()
+    # Hold smile after speech
+    oled_set_expression("happy")
+    time.sleep(0.6)
+    return _
+
 # ==== session ====
 def run_nova_session():
     print("✅ Nova session start.")
@@ -702,13 +716,8 @@ def run_nova_session():
                 pcm = record_until_silence(timeout=FIRST_WAIT_TIMEOUT)
                 if pcm is None:
                     bye = llm_generate(mem, first_greeting_done, kind="farewell", session_history=session_history)
-                    bye = clean_for_speech(bye)
-                    print(f"Nova farewell: {bye}")
-                    oled_talk_start()
-                    _ = speak_and_listen(bye, tts_voice=VOICE, keywords=INTERRUPT_KEYWORDS,
-                                         on_tts_level=oled_on_tts_level)
-                    oled_talk_stop()
-                    session_history.append(("assistant", bye))
+                    speak_farewell_with_smile(bye)
+                    session_history.append(("assistant", clean_for_speech(bye)))
                     return
 
             txt = transcribe_whisper(pcm)
@@ -728,13 +737,8 @@ def run_nova_session():
 
             if txt.lower().strip() in {"bye","goodbye","exit","quit"} or detect_exit_intent(txt):
                 farewell = llm_generate(mem, first_greeting_done, kind="farewell", session_history=session_history)
-                farewell = clean_for_speech(farewell)
-                print(f"Nova farewell: {farewell}")
-                oled_talk_start()
-                _ = speak_and_listen(farewell, tts_voice=VOICE, keywords=INTERRUPT_KEYWORDS,
-                                     on_tts_level=oled_on_tts_level)
-                oled_talk_stop()
-                session_history.append(("assistant", farewell))
+                speak_farewell_with_smile(farewell)
+                session_history.append(("assistant", clean_for_speech(farewell)))
                 if len(session_history) >= 2:
                     last_user = next((c for r,c in reversed(session_history) if r=="user"), "")
                     last_assistant = next((c for r,c in reversed(session_history) if r=="assistant"), "")
