@@ -1,11 +1,12 @@
 {
   "user_prefs": {
-    "notes": "User is seeking recommendations but has not provided specific clothing preferences.",
+    "notes": "User did not provide specific clothing preferences.",
     "size": "170 cm",
     "fit": "wide",
-    "color": "white"
+    "color": "white",
+    "sustainability_priority": "high"
   },
   "notes": [],
   "greetings_done": true,
-  "conversation_summary": "The shopper is interested in a T-shirt made from 70% certified organic cotton and 30% TENCEL™ Lyocell, which is lightweight, breathable, and soft-touch. They are 170 centimeters tall and prefer a wide fit, considering their usual size or possibly sizing up for a looser feel. The selected color is white, viewed as versatile and stylish. The shopper confirmed their intent to purchase and appreciated the conversation. Nova highlighted the T-shirt's certifications, including GOTS for organic cotton and OEKO-TEX® Standard 100 for safety and sustainability, along with sustainable production methods. The shopper did not raise any objections and inquired about care instructions, which Nova provided, recommending washing in cold water inside-out and line drying. The conversation ended positively, with the shopper expressing gratitude and indicating they may have further questions or need assistance in the future."
+  "conversation_summary": "The shopper is interested in a T-shirt made from 70% certified organic cotton and 30% TENCEL™ Lyocell, valued for its lightweight, breathable, and soft-touch qualities. They are 170 centimeters tall and prefer a wide fit, considering their usual size or possibly sizing up for a looser feel. The selected color is white, seen as versatile and stylish. The shopper confirmed their intent to purchase and appreciated the conversation. Nova highlighted the T-shirt's sustainability features, including GOTS certification for organic cotton, OEKO-TEX® Standard 100 certification for safety, low-water dyeing, and production in a fair-wage factory. The shopper inquired about care instructions, which Nova provided, recommending washing in cold water inside-out and line drying. The conversation concluded positively, with the shopper expressing gratitude and indicating they may have further questions or need assistance in the future. No objections were raised, and the shopper's intent to enjoy the T-shirt during cozy moments was noted."
 }
