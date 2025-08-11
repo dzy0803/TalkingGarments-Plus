@@ -923,8 +923,8 @@ def wait_for_activation():
                     print("✋ Pickup detected → activating Nova session")
                     try: oled_sleep_stop()
                     except Exception: pass
-                    oled_clear()
-                    oled_set_expression("listening")
+                    # 不要在这里设 listening，也不清屏；保持唤醒前最后一帧，开场白直接接管
+                    # oled_clear()
                     return
                 consec = 0
 
@@ -944,8 +944,7 @@ def wait_for_activation():
                     last_drawn = aperture
                 if raw_frac >= 1.0:
                     print("👆 Long‑press confirmed → activating Nova session")
-                    oled_clear()
-                    oled_set_expression("listening")
+                    # oled_clear()
                     return
             else:
                 if pressing:
@@ -994,8 +993,7 @@ def wait_for_activation():
                                         print("🟣 Wake word detected → activating Nova session")
                                         try: oled_sleep_stop()
                                         except Exception: pass
-                                        oled_clear()
-                                        oled_set_expression("listening")
+                                        # oled_clear()
                                         return
                                 wake_pcm = b""
                 except queue.Empty:
@@ -1070,6 +1068,7 @@ def run_nova_session():
 
     try:
         while True:
+            # 会话内正常显示“listening”
             oled_show_listening()
             pcm = record_until_silence(timeout=FIRST_WAIT_TIMEOUT)
             if pcm is None:
