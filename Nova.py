@@ -1,7 +1,6 @@
 # Nova.py — Product Agent (Sustainable T‑shirt) with Persona + Memory + Keyword Interrupt
 # Trigger 1: MPU‑6050 "pickup" (any direction). OLED shows sleeping face while idle.
 # Trigger 2: TTP223B capacitive touch. Long‑press to wake with progressive eye‑open animation.
-# Trigger 3: Wake word ("Hey Nova") while idle.
 # OLED: SH1106; expression library: sleep (animated) / listening (side waves) / speaking (mouth cycles on TTS) / thinking (ellipsis + slow gaze)
 # Also: happy / surprised / angry / wink on demand
 # I2C wiring: VCC→3.3V, GND→GND, SDA→GPIO2 (Pin 3), SCL→GPIO3 (Pin 5)
@@ -52,19 +51,6 @@ PRODUCT_FACTS = {
     "fit": "Unisex, regular fit; size down for a closer silhouette",
     "certs": "GOTS-certified cotton, OEKO-TEX® Standard 100",
 }
-
-# ==== Wake word config (NEW) ====
-WAKEWORD_ENABLED = True
-WAKEWORD_PHRASES = [
-    r"\bhey\s*nova\b",
-    r"\bhi\s*nova\b",
-    r"\bok\s*nova\b",
-    r"\bokay\s*nova\b",
-]
-WAKEWORD_REGEX = re.compile("|".join(WAKEWORD_PHRASES), re.IGNORECASE)
-WAKEWORD_TIMEOUT_IDLE = 0.0   # 0 = no idle timeout; keep listening while idle
-WAKEWORD_UTT_MAX_LEN = 3.5    # max seconds for a single wake-word utterance
-WAKEWORD_MIN_LEN = 0.25       # ignore ultra-short bursts
 
 # ==== VAD ====
 vad = webrtcvad.Vad(); vad.set_mode(VAD_MODE)
@@ -778,7 +764,7 @@ TOUCH_COOLDOWN_S = 0.6
 _last_touch_ts = 0.0
 
 # Long‑press config for progressive wake
-TOUCH_LONGPRESS_S = 3.0     # hold duration to fully wake (was 1.2s)
+TOUCH_LONGPRESS_S = 3.0     # hold duration to fully wake
 APERTURE_EPS      = 0.002   # minimal change to redraw
 
 def setup_touch():
@@ -818,7 +804,7 @@ def _draw_wake_progress(aperture: float, happy_hint: bool=False):
                      pupils=(dx, dy), brows="neutral" if not happy_hint else "happy",
                      eye_aperture=aperture)
 
-# === NEW === After‑farewell gentle close to sleep
+# === After‑farewell gentle close to sleep
 def oled_close_eyes_to_sleep(duration=3.0):
     """After farewell: gently close eyes to sleep over `duration` seconds."""
     if not _oled:
@@ -846,30 +832,14 @@ def oled_close_eyes_to_sleep(duration=3.0):
         time.sleep(POLL_INTERVAL)
     oled_sleep_start()
 
-# ==== Wake-word utilities (NEW) ====
-def _normalize_text_for_wake(s: str) -> str:
-    if not s: return ""
-    s = s.lower()
-    s = re.sub(r"[^a-z0-9\s]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-def is_wake_phrase(text: str) -> bool:
-    if not text: return False
-    if WAKEWORD_REGEX.search(text):   # quick path
-        return True
-    norm = _normalize_text_for_wake(text)
-    return bool(WAKEWORD_REGEX.search(norm))
-
-# ==== dual activation wait (touch OR pickup OR wake word) ====
+# ==== dual activation wait (touch OR pickup) ====
 def wait_for_activation():
     """
     Idle loop. Any of:
       - Long‑press touch: eyes slowly open; on release before threshold they close back.
       - Pickup motion: instant activation.
-      - Wake word: say “Hey Nova” while idle; short utterances are transcribed and matched.
     """
-    print("🟢 Idle: waiting for activation (Touch long‑press OR Pickup OR Wake word)…")
+    print("🟢 Idle: waiting for activation (Touch long‑press OR Pickup)…")
     oled_sleep_start()
 
     # State for long‑press animation
@@ -883,26 +853,6 @@ def wait_for_activation():
     # Pickup state
     consec = 0
 
-    # Wake-word local audio state
-    local_q = queue.Queue()
-    speaking = False
-    silence_acc = 0.0
-    wake_pcm = b""
-    wake_last_speech_ts = 0.0
-
-    def _wake_cb(indata, frames, time_info, status):
-        if status:
-            print("Wake mic status:", status, flush=True)
-        local_q.put(bytes(indata))
-
-    # Open a local stream dedicated to idle wake-word listening
-    stream = None
-    if WAKEWORD_ENABLED:
-        stream = sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=FRAME_SIZE, dtype="int16",
-                                   channels=1, callback=_wake_cb)
-        stream.start()
-
-    idle_start = time.time()
     try:
         while True:
             now = time.time()
@@ -923,8 +873,7 @@ def wait_for_activation():
                     print("✋ Pickup detected → activating Nova session")
                     try: oled_sleep_stop()
                     except Exception: pass
-                    # 不要在这里设 listening，也不清屏；保持唤醒前最后一帧，开场白直接接管
-                    # oled_clear()
+                    # 保持当前帧；开场白时由 oled_talk_start() 接管
                     return
                 consec = 0
 
@@ -944,7 +893,6 @@ def wait_for_activation():
                     last_drawn = aperture
                 if raw_frac >= 1.0:
                     print("👆 Long‑press confirmed → activating Nova session")
-                    # oled_clear()
                     return
             else:
                 if pressing:
@@ -967,56 +915,11 @@ def wait_for_activation():
                         closing = False
                         oled_sleep_start()
 
-            # 3) Wake-word path (non-blocking)
-            if WAKEWORD_ENABLED and stream:
-                try:
-                    frame = local_q.get_nowait()
-                    if vad.is_speech(frame, SAMPLE_RATE):
-                        wake_pcm += frame
-                        speaking = True
-                        silence_acc = 0.0
-                        wake_last_speech_ts = now
-                        # prevent overly long utterances to save tokens
-                        if (len(wake_pcm)/2/SAMPLE_RATE) > WAKEWORD_UTT_MAX_LEN:
-                            wake_pcm = b""; speaking=False; silence_acc=0.0
-                    else:
-                        if speaking:
-                            silence_acc += FRAME_DURATION/1000.0
-                            if silence_acc >= SILENCE_TIMEOUT:
-                                dur = len(wake_pcm)/2/SAMPLE_RATE
-                                speaking = False
-                                silence_acc = 0.0
-                                if dur >= WAKEWORD_MIN_LEN:
-                                    txt = transcribe_whisper(wake_pcm)
-                                    print(f"🗣️ Idle utterance: {txt}")
-                                    if is_wake_phrase(txt):
-                                        print("🟣 Wake word detected → activating Nova session")
-                                        try: oled_sleep_stop()
-                                        except Exception: pass
-                                        # oled_clear()
-                                        return
-                                wake_pcm = b""
-                except queue.Empty:
-                    pass
-
-            # Optional idle timeout for wake listener
-            if WAKEWORD_ENABLED and WAKEWORD_TIMEOUT_IDLE > 0:
-                if (now - idle_start) > WAKEWORD_TIMEOUT_IDLE:
-                    # fall back to touch/pickup only (stop stream)
-                    try:
-                        stream.stop(); stream.close()
-                    except Exception:
-                        pass
-
             time.sleep(POLL_INTERVAL)
     finally:
-        if stream:
-            try:
-                stream.stop(); stream.close()
-            except Exception:
-                pass
+        pass
 
-# ==== farewell helper (now with slow close to sleep) ====
+# ==== farewell helper (with slow close to sleep) ====
 def speak_farewell_with_smile(text: str, close_to_sleep=True, close_duration=3.0):
     text = clean_for_speech(text)
     print(f"Nova farewell: {text}")
@@ -1068,7 +971,6 @@ def run_nova_session():
 
     try:
         while True:
-            # 会话内正常显示“listening”
             oled_show_listening()
             pcm = record_until_silence(timeout=FIRST_WAIT_TIMEOUT)
             if pcm is None:
@@ -1152,7 +1054,7 @@ if __name__ == "__main__":
         setup_motion_sensor()
         setup_touch()
         while True:
-            wait_for_activation()   # Touch long‑press OR Pickup OR Wake word
+            wait_for_activation()   # Touch long‑press OR Pickup
             run_nova_session()
     finally:
         try:
