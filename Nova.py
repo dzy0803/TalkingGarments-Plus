@@ -58,6 +58,10 @@ MUTED_AT = 0.0          # timestamp when muted
 MUTE_MIN_SECS = 2.0     # debounce for unmute jitter
 MUTE_MAX_WAIT_S = 60.0  # maximum wait while muted before returning to idle
 
+# --- NEW: Suppress "unmute echo" window to avoid double reply ---
+UNMUTE_SUPPRESS_UNTIL = 0.0     # timestamp until which any 'unmute' intent text is ignored
+UNMUTE_SUPPRESS_WINDOW = 2.5    # seconds after unmute to ignore "you can speak now" style utterances
+
 # ==== VAD ====
 vad = webrtcvad.Vad(); vad.set_mode(VAD_MODE)
 audio_q = queue.Queue()
@@ -107,7 +111,17 @@ def merge_user_prefs(mem, new_prefs: dict):
     return mem
 
 # ==== listening ====
+def _drain_audio_queue():
+    try:
+        while not audio_q.empty():
+            audio_q.get_nowait()
+    except Exception:
+        pass
+
 def record_until_silence(timeout=FIRST_WAIT_TIMEOUT):
+    # NEW: defensively clear any stale frames before each capture
+    _drain_audio_queue()
+
     print(f"🎤 Listening... (timeout={timeout}s, pause≤{SILENCE_TIMEOUT}s won’t cut you off)")
     start = time.time(); pcm=b""; speaking=False; silence_acc=0.0
     with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=FRAME_SIZE, dtype="int16",
@@ -512,13 +526,11 @@ def _render_face(draw, eyes="open", mouth="flat", pupils=(0.0,0.0), brows=None, 
 
 # === helpers for 'muted' face ===
 def _draw_mouth_x(draw, cx, cy):
-    # draw an 'X' as mouth
     x1, y1, x2, y2 = cx-8, cy+8, cx+8, cy+24
     draw.line((x1, y1, x2, y2), fill=255, width=2)
     draw.line((x1, y2, x2, y1), fill=255, width=2)
 
 def _draw_teardrop(draw, x, y, h=7, w=4):
-    # simple tear shape (ellipse)
     draw.ellipse((x-w, y, x+w, y+h), outline=255, fill=255)
 
 # === 'muted listening' animation (tears + head shake) ===
@@ -532,7 +544,7 @@ def _muted_anim_worker():
     BLINK_DUR    = 0.10
     while not _muted_anim_stop.is_set():
         now = time.time()
-        shaking = math.sin((now - t0) * 2.8) * 3.0  # ±3px head shake
+        shaking = math.sin((now - t0) * 2.8) * 3.0
         blink = (now % BLINK_PERIOD) < BLINK_DUR
         with canvas(_oled) as draw:
             if blink:
@@ -543,7 +555,6 @@ def _muted_anim_worker():
                 _render_face(draw, eyes="open", mouth="flat", pupils=(0,0),
                              brows="neutral", head_dx=shaking, mouth_y=mouth_y)
                 _draw_mouth_x(draw, _CX + int(shaking), _CY)
-                # tears under both eyes
                 lx = (_CX - _EYE_OFFSET_X) + int(shaking)
                 rx = (_CX + _EYE_OFFSET_X) + int(shaking)
                 ly = _CY + _EYE_OFFSET_Y + _EYE_R + 2
@@ -820,8 +831,7 @@ def detect_i2c_bus_and_addr():
     return (cands[0] if cands else 1), 0x68
 
 def _read_sensors():
-    """Read accel/gyro values from MPU6050 with retries."""
-    for _ in range(2):  # up to two tries
+    for _ in range(2):
         try:
             ax = _read_word(_bus, MPU_ADDR, REG_ACCEL_XOUT_H)      / ACCEL_LSB_PER_G
             ay = _read_word(_bus, MPU_ADDR, REG_ACCEL_XOUT_H + 2)  / ACCEL_LSB_PER_G
@@ -833,9 +843,7 @@ def _read_sensors():
         except Exception as e:
             print(f"⚠️ I2C read error: {e}, retrying…")
             time.sleep(0.01)
-    # Last resort: return zeros to avoid crash
     return 0.0, 0.0, 1.0, 0.0, 0.0, 0.0
-
 
 def setup_motion_sensor():
     global _bus, I2C_BUS, MPU_ADDR
@@ -857,8 +865,8 @@ TOUCH_COOLDOWN_S = 0.6
 _last_touch_ts = 0.0
 
 # Long‑press config for progressive wake
-TOUCH_LONGPRESS_S = 3.0     # hold duration to fully wake
-APERTURE_EPS      = 0.002   # minimal change to redraw
+TOUCH_LONGPRESS_S = 3.0
+APERTURE_EPS      = 0.002
 
 def setup_touch():
     GPIO.setmode(GPIO.BCM)
@@ -882,13 +890,11 @@ def _debounced_touch(now: float) -> bool:
     _last_touch_ts = now
     return True
 
-# Easing: smoothstep (3x^2 - 2x^3)
 def _ease_smoothstep(x: float) -> float:
     x = max(0.0, min(1.0, x))
     return x*x*(3 - 2*x)
 
 def _draw_wake_progress(aperture: float, happy_hint: bool=False):
-    """Render progressive eye opening at given aperture (0..1)."""
     if not _oled: return
     dx = (aperture * _PUPIL_MAX_DX) * (1.0 if math.sin(time.time()*2.0) > 0 else -1.0)
     dy = math.sin(time.time() * 5.5) * (_PUPIL_MAX_DY * 0.4)
@@ -897,9 +903,7 @@ def _draw_wake_progress(aperture: float, happy_hint: bool=False):
                      pupils=(dx, dy), brows="neutral" if not happy_hint else "happy",
                      eye_aperture=aperture)
 
-# === After‑farewell gentle close to sleep
 def oled_close_eyes_to_sleep(duration=3.0):
-    """After farewell: gently close eyes to sleep over `duration` seconds."""
     if not _oled:
         return
     try:
@@ -925,15 +929,13 @@ def oled_close_eyes_to_sleep(duration=3.0):
         time.sleep(POLL_INTERVAL)
     oled_sleep_start()
 
-# === ADD: reset to pristine idle state ===
 def reset_agent_state_to_idle():
-    """Hard reset runtime flags/animations/queues before entering idle sleep."""
-    global MUTED, MUTED_AT, _tts_started
+    global MUTED, MUTED_AT, _tts_started, UNMUTE_SUPPRESS_UNTIL
     MUTED = False
     MUTED_AT = 0.0
     _tts_started = False
+    UNMUTE_SUPPRESS_UNTIL = 0.0
 
-    # stop any animations safely
     try: oled_talk_stop()
     except: pass
     try: oled_think_stop()
@@ -941,7 +943,6 @@ def reset_agent_state_to_idle():
     try: oled_muted_stop()
     except: pass
 
-    # clear TTS level buffer
     try:
         from collections import deque as _dq
         if isinstance(_level_queue, _dq):
@@ -949,29 +950,17 @@ def reset_agent_state_to_idle():
     except Exception:
         pass
 
-    # drain audio queue to avoid stale frames influencing VAD
-    try:
-        while not audio_q.empty():
-            audio_q.get_nowait()
-    except Exception:
-        pass
+    _drain_audio_queue()
 
 # ==== dual activation wait (touch OR pickup) ====
 def wait_for_activation():
-    """
-    Idle loop. Any of:
-      - Long‑press touch: eyes slowly open; on release before threshold they close back.
-      - Pickup motion: instant activation.
-    """
     print("🟢 Idle: waiting for activation (Touch long‑press OR Pickup)…")
 
-    # ensure pristine state when entering idle
     try: reset_agent_state_to_idle()
     except: pass
 
     oled_sleep_start()
 
-    # State for long‑press animation
     pressing = False
     closing = False
     press_start = 0.0
@@ -979,14 +968,13 @@ def wait_for_activation():
     aperture = 0.0
     last_drawn = -1.0
 
-    # Pickup state
     consec = 0
 
     try:
         while True:
             now = time.time()
 
-            # 1) Pickup path
+            # Pickup path
             ax,ay,az,gx,gy,gz = _read_sensors()
             a_mag = math.sqrt(ax*ax + ay*ay + az*az)
             g_mag = math.sqrt(gx*gx + gy*gy + gz*gz)
@@ -1002,11 +990,10 @@ def wait_for_activation():
                     print("✋ Pickup detected → activating Nova session")
                     try: oled_sleep_stop()
                     except Exception: pass
-                    # 保持当前帧；开场白时由 oled_talk_start() 接管
                     return
                 consec = 0
 
-            # 2) Touch path with long‑press progressive wake
+            # Touch path with long‑press progressive wake
             if touch_active():
                 if not pressing:
                     pressing = True
@@ -1081,9 +1068,7 @@ def llm_generate_with_thinking(mem, first_greeting_done: bool, kind: str,
         except Exception:
             pass
 
-# === Short lines for muting/unmuting moments ===
 def llm_ack_muted(mem, session_history):
-    # We won't TTS while muted; this is for logging or future UI.
     try:
         return llm_generate(mem, first_greeting_done=True, kind="answer",
                             user_text="(User asked you to stop talking; acknowledge briefly, promise to listen.)",
@@ -1092,7 +1077,6 @@ def llm_ack_muted(mem, session_history):
         return "Got it. I’ll stay quiet and listen."
 
 def llm_grateful_return(mem, session_history):
-    # When unmuted, thank the user and resume naturally.
     prompt = ("The user just allowed you to speak again after being muted. "
               "Generate one short, warm line that thanks them for letting you speak and smoothly resumes, "
               "without repeating your name or that you are a T‑shirt.")
@@ -1105,26 +1089,18 @@ def llm_grateful_return(mem, session_history):
 
 # === While-muted loop: only unmute or timeout ===
 def muted_wait_for_unmute_or_timeout(mem, session_history):
-    """
-    When MUTED: don't run any other logic.
-    Only listen for 'unmute' semantic intent.
-    If nobody unmutes within MUTE_MAX_WAIT_S, exit to idle.
-    Returns: "unmuted" | "timeout"
-    """
-    global MUTED, MUTED_AT
+    global MUTED, MUTED_AT, UNMUTE_SUPPRESS_UNTIL
     start = MUTED_AT if MUTED_AT else time.time()
     while MUTED:
         elapsed = time.time() - start
         remaining = MUTE_MAX_WAIT_S - elapsed
         if remaining <= 0:
-            # timeout → back to idle silently, but reset *all* runtime state first
             try: reset_agent_state_to_idle()
             except: pass
             try: oled_close_eyes_to_sleep(duration=1.2)
             except: pass
             return "timeout"
 
-        # listen quietly; only care about unmute intent
         listen_window = max(2.0, min(8.0, remaining))
         pcm = record_until_silence(timeout=listen_window)
         if pcm is None:
@@ -1139,6 +1115,11 @@ def muted_wait_for_unmute_or_timeout(mem, session_history):
             try: oled_muted_stop()
             except: pass
             MUTED = False
+
+            # NEW: drain audio + short settle to avoid echo frames
+            _drain_audio_queue()
+            time.sleep(0.15)
+
             comeback = llm_grateful_return(mem, session_history)
             print(f"🔊 Unmuted (semantic). Comeback: {comeback}")
             oled_talk_start()
@@ -1147,14 +1128,16 @@ def muted_wait_for_unmute_or_timeout(mem, session_history):
             oled_talk_stop()
             session_history.append(("assistant", comeback))
             oled_show_listening()
+
+            # NEW: suppress immediate echo of the unmute phrase
+            UNMUTE_SUPPRESS_UNTIL = time.time() + UNMUTE_SUPPRESS_WINDOW
             return "unmuted"
+
         elif intent == "mute":
-            # reaffirmed mute → reset timer
             MUTED_AT = time.time()
             start = MUTED_AT
             continue
         else:
-            # ignore other content while muted
             continue
 
 # ==== session ====
@@ -1213,7 +1196,7 @@ def run_nova_session():
 
             # === MUTE BLOCK (semantic; listen-only) ===
             intent = classify_mute_intent(txt)
-            global MUTED, MUTED_AT
+            global MUTED, MUTED_AT, UNMUTE_SUPPRESS_UNTIL
 
             if intent == "mute" and not MUTED:
                 MUTED = True
@@ -1224,10 +1207,10 @@ def run_nova_session():
                 print("🔇 Entering muted listen-only mode…")
                 result = muted_wait_for_unmute_or_timeout(mem, session_history)
                 if result == "timeout":
-                    # back to idle sleep; end session
                     return
-                # unmuted → continue normal dialogue
                 oled_show_listening()
+                # After unmute we continue the loop; suppression window is active
+                continue
 
             if MUTED:
                 print("🤫 Still muted; listen-only mode…")
@@ -1235,6 +1218,17 @@ def run_nova_session():
                 if result == "timeout":
                     return
                 oled_show_listening()
+                # unmuted → continue; suppression window is active
+                continue
+
+            # === NEW: If just unmuted, ignore the echo "you can talk now" ===
+            if time.time() < UNMUTE_SUPPRESS_UNTIL:
+                intent_after_unmute = classify_mute_intent(txt)
+                if intent_after_unmute == "unmute":
+                    print("🛑 Suppressing unmute-echo utterance; waiting for real query…")
+                    # Go listen again without responding
+                    oled_show_listening()
+                    continue
 
             # === END MUTE BLOCK ===
 
