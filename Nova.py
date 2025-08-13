@@ -519,7 +519,9 @@ def _render_face(draw, eyes="open", mouth="flat", pupils=(0.0,0.0), brows=None, 
                 _eye_open(draw, cx, cy, dx=pupils[0], dy=pupils[1])
         else:
             _eye_close(draw, cx, cy)
-    _draw_mouth(draw, cx, cy, mouth, y_offset=mouth_y)
+    # draw mouth only if specified (allows 'X only' muted face)
+    if mouth is not None:
+        _draw_mouth(draw, cx, cy, mouth, y_offset=mouth_y)
     if brows: _draw_brows(draw, cx, cy, brows)
     if listening_waves:
         _draw_listen_waves(draw)
@@ -552,7 +554,7 @@ def _muted_anim_worker():
                 _draw_mouth_x(draw, _CX + int(shaking), _CY)
             else:
                 mouth_y = 0 if (int(now*2) % 2 == 0) else 1
-                _render_face(draw, eyes="open", mouth="flat", pupils=(0,0),
+                _render_face(draw, eyes="open", mouth=None, pupils=(0,0),   # ← no flat mouth line
                              brows="neutral", head_dx=shaking, mouth_y=mouth_y)
                 _draw_mouth_x(draw, _CX + int(shaking), _CY)
                 lx = (_CX - _EYE_OFFSET_X) + int(shaking)
@@ -1303,3 +1305,4 @@ if __name__ == "__main__":
             GPIO.cleanup()
         except Exception:
             pass
+x
