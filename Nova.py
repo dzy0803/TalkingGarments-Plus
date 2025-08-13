@@ -1305,4 +1305,4 @@ if __name__ == "__main__":
             GPIO.cleanup()
         except Exception:
             pass
-x
+
