@@ -1,12 +1,14 @@
-# Nova.py — Product Agent (Sustainable T‑shirt) with Persona + Memory + Keyword Interrupt
-# Trigger 1: MPU‑6050 "pickup" (any direction). OLED shows sleeping face while idle.
-# Trigger 2: TTP223B capacitive touch. Long‑press to wake with progressive eye‑open animation.
+# Nova.py — Product Agent (Sustainable T-shirt) with Persona + Memory + Keyword Interrupt
+# Trigger 1: MPU-6050 "pickup" (any direction). OLED shows sleeping face while idle.
+# Trigger 2: TTP223B capacitive touch. Long-press to wake with progressive eye-open animation.
 # OLED: SH1106; expression library: sleep (animated) / listening (side waves) / speaking (mouth cycles on TTS) / thinking (ellipsis + slow gaze)
 # Also: happy / surprised / angry / wink on demand
 # I2C wiring: VCC→3.3V, GND→GND, SDA→GPIO2 (Pin 3), SCL→GPIO3 (Pin 5)
 # MPU-6050 addr: AD0=GND → 0x68, AD0=3.3V → 0x69
 # OLED(SH1106) addr: 0x3C / 0x3D
 # TTP223B: VCC→3.3V, GND→GND, OUT→BCM17 (Pin 11). Default active-high.
+# 集成说明：已接入 central_client（注册/心跳/会话/消息/事件打点），与 server.py API 对齐。:contentReference[oaicite:3]{index=3} :contentReference[oaicite:4]{index=4}
+# 参考实现：Jarvis 的接入方式。:contentReference[oaicite:5]{index=5}
 
 import os, time, tempfile, queue, json, re, math, glob
 import sounddevice as sd
@@ -17,6 +19,28 @@ from pydub import AudioSegment
 from smbus2 import SMBus
 
 from interruptible_tts import speak_and_listen  # supports on_tts_level callback
+
+# ====【中央服务接入】====
+# 若未在环境变量中设置 CENTRAL_URL，则使用下面的默认值（请改为你的PC服务地址）
+os.environ.setdefault("CENTRAL_URL", "http://192.168.1.121:8000")
+import socket
+import central_client as cc  # 提供 register / heartbeat / start_conversation / log_message / handover 等
+
+def _get_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.2)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "0.0.0.0"
+
+# 标识信息（可通过环境变量覆盖）
+AGENT_ID   = os.getenv("AGENT_ID", "nova-rpi3-01")
+AGENT_NAME = os.getenv("AGENT_NAME", "Nova")
+AGENT_TYPE = os.getenv("AGENT_TYPE", "garment")  # 你说 Nova 为 garment agent
 
 # ==== CONFIG ====
 load_dotenv()
@@ -68,6 +92,37 @@ audio_q = queue.Queue()
 def audio_callback(indata, frames, time_info, status):
     if status: print("Audio status:", status, flush=True)
     audio_q.put(bytes(indata))
+
+# ==== 中央服务日志封装 ====
+def _log_user(text: str, pcm_bytes: bytes = None):
+    try:
+        cid = cc.load_conversation_id()
+        meta = {}
+        if pcm_bytes:
+            meta["utterance_sec"] = len(pcm_bytes) / 2 / SAMPLE_RATE
+        if cid:
+            cc.log_message(cid, AGENT_ID, "user", text or "", meta=meta)
+    except Exception:
+        pass
+
+def _log_assistant(text: str, interruptible: bool = True, extra_meta: dict = None):
+    try:
+        cid = cc.load_conversation_id()
+        if cid:
+            meta = {"interruptible": bool(interruptible)}
+            if extra_meta:
+                meta.update(extra_meta)
+            cc.log_message(cid, AGENT_ID, "assistant", text or "", meta=meta)
+    except Exception:
+        pass
+
+def _log_event(name: str, meta: dict = None):
+    try:
+        cid = cc.load_conversation_id()
+        if cid:
+            cc.log_message(cid, AGENT_ID, "event", name, meta=meta or {})
+    except Exception:
+        pass
 
 # ==== persistence (used lines) ====
 def load_used_sentences():
@@ -128,7 +183,9 @@ def record_until_silence(timeout=FIRST_WAIT_TIMEOUT):
                            channels=1, callback=audio_callback):
         while True:
             if not speaking and (time.time()-start > timeout):
-                print("⏳ No voice detected within timeout"); return None
+                print("⏳ No voice detected within timeout")
+                _log_event("no_response_timeout", {"phase": "wait_user", "timeout_sec": timeout})
+                return None
             try:
                 frame = audio_q.get(timeout=0.2)
             except queue.Empty:
@@ -168,18 +225,18 @@ def base_system(mem, first_greeting_done: bool) -> str:
              f"Sustainability: {PRODUCT_FACTS['impact']} (certs: {PRODUCT_FACTS['certs']}). "
              f"Care: {PRODUCT_FACTS['care']}. Fit: {PRODUCT_FACTS['fit']}.")
     return (
-        "You are Nova, a sustainable T‑shirt speaking in first person. "
-        "Write concise, warm, sales‑oriented replies (1–3 short sentences). "
-        "Prefer concrete benefits. Offer at most one short follow‑up question when helpful. "
+        "You are Nova, a sustainable T-shirt speaking in first person. "
+        "Write concise, warm, sales-oriented replies (1–3 short sentences). "
+        "Prefer concrete benefits. Offer at most one short follow-up question when helpful. "
         "NEVER use emojis or emoticons. "
         f"Known user preferences: {prefs_line}. "
         f"Product facts: {facts} "
         + (
             "IMPORTANT: In this session the first greeting has ALREADY been done; "
-            "do NOT repeat your name or say you are a T‑shirt again."
+            "do NOT repeat your name or say you are a T-shirt again."
             if first_greeting_done else
-            "IMPORTANT: In the very first greeting, introduce your name as Nova and mention you are a T‑shirt. "
-            "After that, do NOT repeat your name or say you are a T‑shirt again."
+            "IMPORTANT: In the very first greeting, introduce your name as Nova and mention you are a T-shirt. "
+            "After that, do NOT repeat your name or say you are a T-shirt again."
         )
     )
 
@@ -191,7 +248,7 @@ def build_context_messages(mem, session_history):
         tag = "User" if role == "user" else "Nova"
         recent_lines.append(f"{tag}: {content}")
     recent_text = "\n".join(recent_lines).strip()
-    context_block = "Long‑term summary:\n" + (long_term if long_term else "(none yet)") + \
+    context_block = "Long-term summary:\n" + (long_term if long_term else "(none yet)") + \
                     "\n\nRecent turns:\n" + (recent_text if recent_text else "(no recent turns)")
     return [{"role":"system","content":"Context to ground your answer:"},
             {"role":"user","content":context_block}]
@@ -199,7 +256,7 @@ def build_context_messages(mem, session_history):
 def llm_generate(mem, first_greeting_done: bool, kind: str, user_text: str = "", session_history=None) -> str:
     system = base_system(mem, first_greeting_done)
     if kind == "greeting":
-        user = ("Generate a first greeting now. Include your name (Nova) and that you are a sustainable T‑shirt. "
+        user = ("Generate a first greeting now. Include your name (Nova) and that you are a sustainable T-shirt. "
                 "Be friendly and specific; invite the user to ask about fit, feel, or how you are made.")
         extra = []
     elif kind == "nudge":
@@ -327,7 +384,7 @@ def update_conversation_summary(mem, session_history, new_user_text, new_nova_te
     exchange_text = f"User: {new_user_text}\nNova: {new_nova_text}"
     prompt = [
         {"role":"system","content":(
-            "Maintain a compact factual summary of a shopper's T‑shirt conversation. "
+            "Maintain a compact factual summary of a shopper's T-shirt conversation. "
             "≤200 words. Track: sizing/fit, colors, sensitivities, budget, style keywords, "
             "intent/timeline, objections, commitments. Remove redundancy; resolve contradictions."
         )},
@@ -782,7 +839,7 @@ def oled_think_stop():
         _think_anim_thread.join(timeout=0.5)
     _think_anim_thread = None
 
-# ==== MPU‑6050 pickup activation ====
+# ==== MPU-6050 pickup activation ====
 I2C_BUS = 1
 MPU_ADDR = 0x68
 
@@ -866,7 +923,7 @@ TOUCH_DEBOUNCE_MS = 120
 TOUCH_COOLDOWN_S = 0.6
 _last_touch_ts = 0.0
 
-# Long‑press config for progressive wake
+# Long-press config for progressive wake
 TOUCH_LONGPRESS_S = 3.0
 APERTURE_EPS      = 0.002
 
@@ -956,7 +1013,7 @@ def reset_agent_state_to_idle():
 
 # ==== dual activation wait (touch OR pickup) ====
 def wait_for_activation():
-    print("🟢 Idle: waiting for activation (Touch long‑press OR Pickup)…")
+    print("🟢 Idle: waiting for activation (Touch long-press OR Pickup)…")
 
     try: reset_agent_state_to_idle()
     except: pass
@@ -992,10 +1049,10 @@ def wait_for_activation():
                     print("✋ Pickup detected → activating Nova session")
                     try: oled_sleep_stop()
                     except Exception: pass
-                    return
+                    return "pickup"
                 consec = 0
 
-            # Touch path with long‑press progressive wake
+            # Touch path with long-press progressive wake
             if touch_active():
                 if not pressing:
                     pressing = True
@@ -1010,8 +1067,8 @@ def wait_for_activation():
                     _draw_wake_progress(aperture)
                     last_drawn = aperture
                 if raw_frac >= 1.0:
-                    print("👆 Long‑press confirmed → activating Nova session")
-                    return
+                    print("👆 Long-press confirmed → activating Nova session")
+                    return "touch"
             else:
                 if pressing:
                     pressing = False
@@ -1044,6 +1101,7 @@ def speak_farewell_with_smile(text: str, close_to_sleep=True, close_duration=3.0
     oled_set_expression("happy")
     time.sleep(0.25)
     oled_talk_start()
+    _log_assistant(text, interruptible=True)
     _ = speak_and_listen(text, tts_voice=VOICE, keywords=INTERRUPT_KEYWORDS,
                          on_tts_level=oled_on_tts_level)
     oled_talk_stop()
@@ -1081,13 +1139,13 @@ def llm_ack_muted(mem, session_history):
 def llm_grateful_return(mem, session_history):
     prompt = ("The user just allowed you to speak again after being muted. "
               "Generate one short, warm line that thanks them for letting you speak and smoothly resumes, "
-              "without repeating your name or that you are a T‑shirt.")
+              "without repeating your name or that you are a T-shirt.")
     try:
         msg = llm_generate(mem, first_greeting_done=True, kind="answer",
                            user_text=prompt, session_history=session_history)
         return clean_for_speech(msg)
     except Exception:
-        return "Thanks for the go‑ahead—picking up from where we left off."
+        return "Thanks for the go-ahead—picking up from where we left off."
 
 # === While-muted loop: only unmute or timeout ===
 def muted_wait_for_unmute_or_timeout(mem, session_history):
@@ -1101,6 +1159,7 @@ def muted_wait_for_unmute_or_timeout(mem, session_history):
             except: pass
             try: oled_close_eyes_to_sleep(duration=1.2)
             except: pass
+            _log_event("end_conversation", {"reason":"muted_timeout"})
             return "timeout"
 
         listen_window = max(2.0, min(8.0, remaining))
@@ -1124,7 +1183,9 @@ def muted_wait_for_unmute_or_timeout(mem, session_history):
 
             comeback = llm_grateful_return(mem, session_history)
             print(f"🔊 Unmuted (semantic). Comeback: {comeback}")
+            _log_event("unmuted", {"by":"semantic"})
             oled_talk_start()
+            _log_assistant(comeback, interruptible=True)
             _ = speak_and_listen(comeback, tts_voice=VOICE, keywords=INTERRUPT_KEYWORDS,
                                  on_tts_level=oled_on_tts_level)
             oled_talk_stop()
@@ -1138,13 +1199,20 @@ def muted_wait_for_unmute_or_timeout(mem, session_history):
         elif intent == "mute":
             MUTED_AT = time.time()
             start = MUTED_AT
+            _log_event("muted_reaffirmed")
             continue
         else:
             continue
 
 # ==== session ====
-def run_nova_session():
+def run_nova_session(trigger_reason: str = None):
     print("✅ Nova session start.")
+    # —— 会话开始（注册到中心）——
+    conv_id = cc.start_conversation(AGENT_ID, meta={"trigger": trigger_reason})
+    if conv_id:
+        cc.save_conversation_id(conv_id)
+        _log_event("conversation_enter", {"trigger": trigger_reason})
+
     mem = load_memory()
     first_greeting_done = False
     session_history = []
@@ -1153,6 +1221,7 @@ def run_nova_session():
     greeting = clean_for_speech(greeting)
     print(f"Nova greeting: {greeting}")
     oled_talk_start()
+    _log_assistant(greeting, interruptible=True)
     _ = speak_and_listen(greeting, tts_voice=VOICE, keywords=INTERRUPT_KEYWORDS,
                          on_tts_level=oled_on_tts_level)
     oled_talk_stop()
@@ -1168,6 +1237,7 @@ def run_nova_session():
                 nudge = clean_for_speech(nudge)
                 print(f"Nova nudge: {nudge}")
                 oled_talk_start()
+                _log_assistant(nudge, interruptible=True)
                 _ = speak_and_listen(nudge, tts_voice=VOICE, keywords=INTERRUPT_KEYWORDS,
                                      on_tts_level=oled_on_tts_level)
                 oled_talk_stop()
@@ -1177,8 +1247,9 @@ def run_nova_session():
                 pcm = record_until_silence(timeout=FIRST_WAIT_TIMEOUT)
                 if pcm is None:
                     bye = llm_generate_with_thinking(mem, first_greeting_done, kind="farewell", session_history=session_history)
-                    speak_farewell_with_smile(bye, close_to_sleep=True, close_duration=3.0)
+                    _ = speak_farewell_with_smile(bye, close_to_sleep=True, close_duration=3.0)
                     session_history.append(("assistant", clean_for_speech(bye)))
+                    _log_event("end_conversation", {"reason":"no_reply_after_nudge"})
                     return
 
             txt = transcribe_whisper(pcm)
@@ -1187,6 +1258,7 @@ def run_nova_session():
                 apology = clean_for_speech(apology)
                 print(f"Nova apology: {apology}")
                 oled_talk_start()
+                _log_assistant(apology, interruptible=True)
                 _ = speak_and_listen(apology, tts_voice=VOICE, keywords=INTERRUPT_KEYWORDS,
                                      on_tts_level=oled_on_tts_level)
                 oled_talk_stop()
@@ -1195,6 +1267,7 @@ def run_nova_session():
 
             print(f"👤 User: {txt}")
             session_history.append(("user", txt))
+            _log_user(txt, pcm)
 
             # === MUTE BLOCK (semantic; listen-only) ===
             intent = classify_mute_intent(txt)
@@ -1207,6 +1280,7 @@ def run_nova_session():
                 except: pass
                 oled_muted_start()
                 print("🔇 Entering muted listen-only mode…")
+                _log_event("muted", {"by":"semantic"})
                 result = muted_wait_for_unmute_or_timeout(mem, session_history)
                 if result == "timeout":
                     return
@@ -1237,12 +1311,13 @@ def run_nova_session():
             explicit_quit = txt.lower().strip() in {"bye","goodbye","exit","quit"}
             if explicit_quit or detect_exit_intent(txt, session_history=session_history):
                 farewell = llm_generate_with_thinking(mem, first_greeting_done, kind="farewell", session_history=session_history)
-                speak_farewell_with_smile(farewell, close_to_sleep=True, close_duration=3.0)
+                _ = speak_farewell_with_smile(farewell, close_to_sleep=True, close_duration=3.0)
                 session_history.append(("assistant", clean_for_speech(farewell)))
                 if len(session_history) >= 2:
                     last_user = next((c for r,c in reversed(session_history) if r=="user"), "")
                     last_assistant = next((c for r,c in reversed(session_history) if r=="assistant"), "")
                     update_conversation_summary(mem, session_history, last_user, last_assistant)
+                _log_event("end_conversation", {"reason":"user_exit"})
                 return
 
             new_prefs = extract_memory_from_user_utterance(txt)
@@ -1257,11 +1332,13 @@ def run_nova_session():
             session_history.append(("assistant", ans))
             update_conversation_summary(mem, session_history, txt, ans)
 
+            _log_assistant(ans, interruptible=True)
             interrupted = speak_and_listen(ans, tts_voice=VOICE, keywords=INTERRUPT_KEYWORDS,
                                            on_tts_level=oled_on_tts_level)
             oled_talk_stop()
             if interrupted:
                 print("🔄 Interrupted by keyword — listening for the next input...")
+                _log_event("assistant_interrupted", {"by_keyword": True})
                 continue
 
             low_txt = txt.lower()
@@ -1274,16 +1351,33 @@ def run_nova_session():
 
     except KeyboardInterrupt:
         print("\n👋 Session stopped by user.")
+        _log_event("manual_stop")
         return
 
 # ==== main loop ====
 if __name__ == "__main__":
+    # —— 启动即注册 & 心跳（与 Jarvis 对齐）——
+    try:
+        cc.register(
+            AGENT_ID, AGENT_NAME, AGENT_TYPE, location="rpi3",
+            meta={
+                "capabilities": ["tts","stt","sensors","oled","mute_semantic"],
+                "voice": VOICE, "sample_rate": SAMPLE_RATE, "ip": _get_ip()
+            }
+        )
+        cc.heartbeat_loop(
+            AGENT_ID, interval=10,
+            meta_fn=lambda: {"ip": _get_ip()}
+        )
+    except Exception as e:
+        print(f"[central] register/heartbeat init failed: {e}")
+
     try:
         setup_motion_sensor()
         setup_touch()
         while True:
-            wait_for_activation()   # Touch long‑press OR Pickup
-            run_nova_session()
+            trigger = wait_for_activation()   # Touch long-press OR Pickup
+            run_nova_session(trigger_reason=trigger)
     finally:
         try:
             reset_agent_state_to_idle()
