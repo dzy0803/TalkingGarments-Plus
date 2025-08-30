@@ -1,13 +1,19 @@
-# Jarvis.py
+# Jarvis.py — 保留原功能 + 接入 central_client（注册/心跳/对话日志/交接）
 import cv2, mediapipe as mp, time, os, asyncio, edge_tts, subprocess, queue, webrtcvad
 from dotenv import load_dotenv
 from picamera2 import Picamera2
 import openai, sys, json, tempfile, audioop, sounddevice as sd
 from pydub import AudioSegment
+import socket
+
+# ←—— 接入你的 central_client.py ——→
+# 默认指向你的PC服务地址；若已在系统里 export CENTRAL_URL，会覆盖这里的默认。
+os.environ.setdefault("CENTRAL_URL", "http://192.168.1.121:8000")
+import central_client as cc
 
 from interruptible_tts import speak_and_listen  # now supports keywords
 
-# === API ===
+# === API ===（原有）
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -28,7 +34,23 @@ audio_queue = queue.Queue()
 device_info = sd.query_devices(kind='input')
 DEVICE_SR = int(device_info['default_samplerate'])
 
-# === Whisper speech-to-text ===
+# === 运行元信息（新增） ===
+AGENT_ID = os.getenv("AGENT_ID", "jarvis-rpi4-01")
+AGENT_NAME = os.getenv("AGENT_NAME", "Jarvis")
+AGENT_TYPE = "greeter"
+
+def _get_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.2)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "0.0.0.0"
+
+# === Whisper speech-to-text（原有） ===
 def whisper_transcribe(pcm_bytes):
     duration = len(pcm_bytes) / 2 / SAMPLE_RATE
     if duration < MIN_AUDIO_LEN:
@@ -50,7 +72,7 @@ def whisper_transcribe(pcm_bytes):
             print(f"❌ Whisper出错: {e}")
             return ""
 
-# === 动态录音（支持超时退出） ===
+# === 动态录音（原有，加入打点） ===
 def audio_callback(indata, frames, time_info, status):
     if status:
         print("⚠️", status)
@@ -75,6 +97,9 @@ def vad_recording(timeout=7):
             # ✅ 超时检测
             if not speaking and (time.time() - start_time > timeout):
                 print("⏳ No voice detected within timeout")
+                conv_id = cc.load_conversation_id()
+                cc.log_message(conv_id, AGENT_ID, "event", "no_response_timeout",
+                               meta={"phase": "wait_user", "timeout_sec": timeout})
                 return None
 
             try:
@@ -107,7 +132,7 @@ def vad_recording(timeout=7):
                 print(f"⏳ 超过最大长度 {MAX_AUDIO_LEN}s，强制结束")
                 return pcm_buffer
 
-# === GPT helpers ===
+# === GPT helpers（原有） ===
 def load_used_sentences():
     if os.path.exists(USED_FILE):
         with open(USED_FILE, "r") as f:
@@ -153,12 +178,27 @@ def classify_intent(user_text):
     result = gpt_reply(prompt, temp=0, max_tokens=10).lower()
     return "continue" if "continue" in result else "none"
 
+# === 说话（原有TTS保留）+ 打点封装 ===
 def speak_no_interrupt(text):
+    # 发送 assistant 消息到中央
+    conv_id = cc.load_conversation_id()
+    cc.log_message(conv_id, AGENT_ID, "assistant", text, meta={"interruptible": False})
+    # 原有播报
     tmp_file = "/tmp/tts_once.mp3"
     asyncio.run(edge_tts.Communicate(text, voice=VOICE_JARVIS).save(tmp_file))
     subprocess.run(["mpg123", "-q", tmp_file])
 
-# === Camera setup ===
+def speak_with_optional_interrupt(text, keywords=None):
+    """用于欢迎语等可打断发言"""
+    conv_id = cc.load_conversation_id()
+    cc.log_message(conv_id, AGENT_ID, "assistant", text,
+                   meta={"interruptible": True, "keywords": keywords or []})
+    interrupted = speak_and_listen(text, tts_voice=VOICE_JARVIS, keywords=(keywords or []))
+    if interrupted:
+        cc.log_message(conv_id, AGENT_ID, "event", "assistant_interrupted", meta={"by_keyword": True})
+    return interrupted
+
+# === Camera setup（原有） ===
 picam2 = Picamera2()
 picam2.configure(
     picam2.create_video_configuration(
@@ -169,6 +209,18 @@ picam2.start()
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_drawing = mp.solutions.drawing_utils
+
+# === 启动即注册 & 心跳（新增，非侵入） ===
+cc.register(AGENT_ID, AGENT_NAME, AGENT_TYPE, location="rpi4",
+            meta={"capabilities": ["vision","tts","stt","handoff"],
+                  "voice": VOICE_JARVIS, "sample_rate": SAMPLE_RATE, "ip": _get_ip()})
+
+def _hb_meta():
+    return {"device_sr": DEVICE_SR, "ip": _get_ip()}
+
+cc.heartbeat_loop(AGENT_ID, interval=10, meta_fn=_hb_meta)
+
+# === 启动提示（原有） ===
 speak_no_interrupt("System ready, please look at the camera.")
 time.sleep(0.2)  # 可选：给播放器一点点缓冲时间
 
@@ -202,7 +254,16 @@ with mp_face_mesh.FaceMesh(
                         interaction_mode = True
                         print("✅ Face stayed 3s → Entering welcome")
 
-                        # GPT welcome (allow keyword interruption)
+                        # —— 会话开始（新增打点）——
+                        conv_id = cc.start_conversation(
+                            AGENT_ID,
+                            meta={"reason": "face_stay", "stay_threshold_sec": stay_threshold}
+                        )
+                        if not conv_id:
+                            # 若失败，也不影响主流程
+                            pass
+
+                        # GPT welcome (allow keyword interruption)（原有）
                         welcome_prompt = (
                             "You are Jarvis, the warm store greeter. "
                             "Welcome the customer to the clothing store. "
@@ -213,10 +274,9 @@ with mp_face_mesh.FaceMesh(
                         welcome = get_unique_sentence(welcome_prompt)
                         print(f"🤖 Jarvis says: {welcome}")
 
-                        # 🔑 Only keyword 'stop talking' will interrupt during TTS
-                        interrupted = speak_and_listen(
+                        # 🔑 Only keyword 'stop talking' will interrupt during TTS（原有）
+                        interrupted = speak_with_optional_interrupt(
                             welcome,
-                            tts_voice=VOICE_JARVIS,
                             keywords=["stop talking"]
                         )
 
@@ -248,12 +308,16 @@ with mp_face_mesh.FaceMesh(
                                     goodbye_line = gpt_reply(goodbye_prompt, temp=0.7, max_tokens=40)
                                     print(f"🤖 Jarvis final goodbye: {goodbye_line}")
                                     speak_no_interrupt(goodbye_line)
+                                    cc.log_message(cc.load_conversation_id(), AGENT_ID, "event",
+                                                   "end_conversation", meta={"reason": "no_reply_after_reminder"})
                                     interaction_mode = False
                                     stay_start = None
                                     continue
 
                             # ✅ If someone spoke
                             user_reply = whisper_transcribe(pcm_data)
+                            conv_id = cc.load_conversation_id()
+                            cc.log_message(conv_id, AGENT_ID, "user", user_reply or "")
                             print(f"🗣️ User interrupted with: {user_reply}")
                             if not user_reply.strip():
                                 unclear_prompt = (
@@ -265,6 +329,7 @@ with mp_face_mesh.FaceMesh(
                                 speak_no_interrupt(unclear_line)
                             else:
                                 intent = classify_intent(user_reply)
+                                cc.log_message(conv_id, AGENT_ID, "event", "intent_classified", meta={"intent": intent})
                                 if intent == "continue":
                                     followup_prompt = f"""
                                     The user interrupted and said: "{user_reply}".
@@ -285,6 +350,8 @@ with mp_face_mesh.FaceMesh(
                                     goodbye_line = gpt_reply(goodbye_prompt, temp=0.7, max_tokens=40)
                                     print(f"🤖 Jarvis goodbye: {goodbye_line}")
                                     speak_no_interrupt(goodbye_line)
+                                    cc.log_message(conv_id, AGENT_ID, "event",
+                                                   "end_conversation", meta={"reason": "user_left_after_interrupt"})
                                     interaction_mode = False
                                     stay_start = None
                                     continue
@@ -293,7 +360,7 @@ with mp_face_mesh.FaceMesh(
                 stay_start = None
 
         if interaction_mode:
-            # ✅ Subsequent dialog: same two-phase timeout
+            # ✅ Subsequent dialog: same two-phase timeout（原有）
             pcm_data = vad_recording(timeout=7)
             if pcm_data is None:
                 remind_prompt = (
@@ -316,11 +383,15 @@ with mp_face_mesh.FaceMesh(
                     goodbye_line = gpt_reply(goodbye_prompt, temp=0.7, max_tokens=40)
                     print(f"🤖 Jarvis final goodbye: {goodbye_line}")
                     speak_no_interrupt(goodbye_line)
+                    cc.log_message(cc.load_conversation_id(), AGENT_ID, "event",
+                                   "end_conversation", meta={"reason": "no_reply_after_reminder"})
                     interaction_mode = False
                     stay_start = None
                     continue
 
             user_reply = whisper_transcribe(pcm_data)
+            conv_id = cc.load_conversation_id()
+            cc.log_message(conv_id, AGENT_ID, "user", user_reply or "")
             if not user_reply.strip():
                 goodbye_prompt = (
                     "You are Jarvis the greeter. "
@@ -329,16 +400,21 @@ with mp_face_mesh.FaceMesh(
                 goodbye = get_unique_sentence(goodbye_prompt)
                 print(f"🤖 Jarvis says: {goodbye}")
                 speak_no_interrupt(goodbye)
+                cc.log_message(conv_id, AGENT_ID, "event",
+                               "end_conversation", meta={"reason": "empty_transcript"})
                 interaction_mode = False
                 stay_start = None
                 continue
 
             print(f"🗣️ User: {user_reply}")
             intent = classify_intent(user_reply)
-            print(f"Intent classified: {intent}")
+            cc.log_message(conv_id, AGENT_ID, "event", "intent_classified", meta={"intent": intent})
 
             if intent == "continue":
                 speak_no_interrupt("Great! I’ll hand you over to Alice, our specialist.")
+                # —— 交接到 Alice（新增打点）——
+                cc.handover(conv_id, from_agent=AGENT_ID, to_agent="Alice", reason="handoff_to_alice")
+                # 保持原逻辑：退出由 main 启动 Alice
                 sys.exit(0)
             else:
                 goodbye_prompt = (
@@ -348,10 +424,13 @@ with mp_face_mesh.FaceMesh(
                 goodbye = get_unique_sentence(goodbye_prompt)
                 print(f"🤖 Jarvis says: {goodbye}")
                 speak_no_interrupt(goodbye)
+                cc.log_message(conv_id, AGENT_ID, "event",
+                               "end_conversation", meta={"reason": "user_declined"})
                 interaction_mode = False
                 stay_start = None
                 continue
 
+        # —— 可视化绘制（原有）——
         if results.multi_face_landmarks:
             for face_landmarks in results.multi_face_landmarks:
                 mp_drawing.draw_landmarks(
@@ -364,6 +443,9 @@ with mp_face_mesh.FaceMesh(
 
         cv2.imshow("Jarvis FaceMesh Wide View", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
+            conv_id = cc.load_conversation_id()
+            cc.log_message(conv_id, AGENT_ID, "event", "manual_quit")
             break
 
 cv2.destroyAllWindows()
+

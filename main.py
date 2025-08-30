@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import os, asyncio, edge_tts   # ✅ 新增 edge_tts 依赖
-os.system("amixer sset 'Master' 75% unmute")
+from pathlib import Path
+CONV_FILE = Path("/tmp/current_conversation_id.txt")
+os.system("amixer sset 'Master' 70% unmute")
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 async def startup_voice():
@@ -20,10 +22,14 @@ while True:
     ret = subprocess.run(["python3", "Jarvis.py"])
     print(f"Jarvis exited with code {ret.returncode}")
 
-    # 如果 Jarvis 正常退出，进入 Alice
+    # 如果 Jarvis 正常退出，进入 Alice，并把会话ID传过去
+    env = os.environ.copy()
+    if CONV_FILE.exists():
+        env["TALOS_CONV_ID"] = CONV_FILE.read_text().strip()
+
     print("\n=== 🤖 Switching to Alice (Alice.py) ===")
-    ret = subprocess.run(["python3", "Alice.py"])
+    ret = subprocess.run(["python3", "Alice.py"], env=env)
     print(f"Alice exited with code {ret.returncode}")
 
-    # Alice 正常退出后 → 回到 Jarvis
     print("\n=== 🔄 Returning to Jarvis ===")
+
