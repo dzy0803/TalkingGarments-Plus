@@ -25,3 +25,18 @@
     <img src="https://img.youtube.com/vi/HASNqg4KB4M/hqdefault.jpg" alt="Demo video" width="720">
   </a>
 </p>
+
+
+<h3 align="center">Single Agent Demo：Garment Agent (Nova) Individual Operation</h3>
+<p align="center">
+  <a href="https://youtu.be/pgLbDTZVdjw">
+    <img src="https://img.youtube.com/vi/pgLbDTZVdjw/hqdefault.jpg" alt="Demo video" width="720">
+  </a>
+</p>
+
+<h3 align="center">Interrutable_tts Module Demo：Interrupt Agents while its Speaking</h3>
+<p align="center">
+  <a href="https://youtu.be/jWWa-2gEMf4">
+    <img src="https://img.youtube.com/vi/jWWa-2gEMf4/hqdefault.jpg" alt="Demo video" width="720">
+  </a>
+</p>
