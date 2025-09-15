@@ -13,7 +13,7 @@ This section contains one video showing how the Talking Garments Plus Multi-Agen
 
 ---
 ## Single Agent Workflow:
-In order to demonstrate the capabilities from different agents better, this section contains four videos shows how different single-agent in TGP-MAS can work individually. One video for Greeter Agent Jarvis, one video for Shopping Guide Agent Alice, one video for Garment Agent Nova, and one video for the interruptable_tts module developed for them to achieve user's voice interrupt to agents while agents are speaking.
+In order to better demonstrate the capabilities from different agents, this section contains four videos shows how different single-agent in TGP-MAS can work individually. One video for Greeter Agent Jarvis, one video for Shopping Guide Agent Alice, one video for Garment Agent Nova, and one video for the interruptable_tts module developed for them to achieve user's voice interrupt to agents while agents are speaking.
 
 
 <h3 align="center">Single Agent Demo：Greeter Agent (Jarvis) Individual Operation</h3>
