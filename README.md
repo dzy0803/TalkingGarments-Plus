@@ -1,7 +1,7 @@
 # Talking Garments Plus
 
 
-## Multi-agents System Workflow:
+## Multi-agents System Workflow Video:
 This section contains one video showing how the Talking Garments Plus Multi-Agent System (TGP-MAS) working as an unmanned clothing-store, with all agents working together to complete the full-operation workflow.
 <h3 align="center">Multi-agent System Demo：Talking Garment Plus MAS Full Operation with 3 main stages</h3>
 <p align="center">
@@ -12,7 +12,7 @@ This section contains one video showing how the Talking Garments Plus Multi-Agen
 
 
 ---
-## Single Agent Workflow:
+## Single Agent Workflow Videos:
 In order to better demonstrate the capabilities from different agents, this section contains four videos shows how different single-agent in TGP-MAS can work individually. One video for Greeter Agent Jarvis, one video for Shopping Guide Agent Alice, one video for Garment Agent Nova, and one video for the interruptable_tts module developed for them to achieve user's voice interrupt to agents while agents are speaking.
 
 
