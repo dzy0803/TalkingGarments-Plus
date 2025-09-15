@@ -2,7 +2,7 @@
 
 
 ## Multi-agents System Workflow:
-This section contains one video showing how the TGP-MAS working as an unmanned clothing-store, with all agents working together to complete the full-operation workflow.
+This section contains one video showing how the Talking Garments Plus Multi-Agent System (TGP-MAS) working as an unmanned clothing-store, with all agents working together to complete the full-operation workflow.
 <h3 align="center">Multi-agent System Demo：Talking Garment Plus MAS Full Operation with 3 main stages</h3>
 <p align="center">
   <a href="https://youtu.be/zqQ-d7ONGzY">
