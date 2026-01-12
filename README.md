@@ -1,5 +1,9 @@
+<div align="center">
 
---------------------------- [![PDF](https://img.shields.io/badge/PDF-Download-red)](./SEIoT_dissertation.pdf) 👈 Download the Project Paper Here --------------------------------
+[![PDF](https://img.shields.io/badge/PDF-Download-red)](./SEIoT_dissertation.pdf)  
+👈 Download the Project Paper Here
+
+</div>
 # Talking Garments Plus
 
 
