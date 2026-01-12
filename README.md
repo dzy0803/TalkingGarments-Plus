@@ -1,5 +1,5 @@
 
-Download Paper 👉 [![PDF](https://img.shields.io/badge/PDF-Download-red)](./SEIoT_dissertation.pdf) 
+[![PDF](https://img.shields.io/badge/PDF-Download-red)](./SEIoT_dissertation.pdf) 👈 Download the Project Paper Here
 # Talking Garments Plus
 
 
