@@ -1,6 +1,7 @@
+
+Download Dissertation (PDF)[![PDF](https://img.shields.io/badge/PDF-Download-red)](./SEIoT_dissertation.pdf)
 # Talking Garments Plus
 
-[![PDF](https://img.shields.io/badge/PDF-Download-red)](./SEIoT_dissertation.pdf)
 
 ## Multi-agents System Workflow Video:
 This section contains one video showing how the Talking Garments Plus Multi-Agent System (TGP-MAS) working as an unmanned clothing-store, with all agents working together to complete the full-operation workflow.
